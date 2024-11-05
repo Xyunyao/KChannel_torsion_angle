@@ -19,8 +19,28 @@ class TorsionAnalyzer:
 
     def _adjust_residue_numbers(self):
         # Filter to only phi and psi columns and adjust residue numbers
-        valid_columns = [col for col in self.data.columns if '-psi' in col or '-phi' in col]
-        self.data = self.data[valid_columns]
+        #valid_columns = [col for col in self.data.columns if '-psi' in col or '-phi' in col]
+        #self.data = self.data[valid_columns]
+        # Create an empty dictionary to store adjusted data
+        adjusted_data = {}
+
+        # Iterate through columns and adjust residue numbers based on chain
+        for col in self.data.columns:
+            if 'time_ps' in col:
+                adjusted_data['time_ps']=self.data[col]
+            if '-psi' in col or '-phi' in col:
+                # Extract chain and residue index
+                chain, residue_num = col.split('-')[0].split(':')
+                residue_num = int(residue_num)
+
+                # Apply residue adjustment for the given chain
+                if chain in self.residue_adjustments:
+                    adjusted_residue_num = residue_num + self.residue_adjustments[chain]
+                    adjusted_col = f"{chain}:{adjusted_residue_num}-{col.split('-')[1]}"
+                    adjusted_data[adjusted_col] = self.data[col]
+
+        # Convert the adjusted data back into a DataFrame
+        self.data = pd.DataFrame(adjusted_data)
 
     def calculate_intra_residue_correlation(self):
         intra_torsion = {}
@@ -82,3 +102,5 @@ class TorsionAnalyzer:
         plt.savefig(plot_file)
         print(f"Scatter plot saved as {plot_file}")
         plt.show()
+
+ 

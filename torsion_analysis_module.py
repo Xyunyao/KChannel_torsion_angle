@@ -2,16 +2,20 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
+import MDAnalysis as mda
+from MDAnalysis.analysis.dihedrals import Ramachandran
 import os
+from math import ceil
 
 class TorsionAnalyzer:
-    def __init__(self, file_name):
+    def __init__(self, file_name, adjusted_residue_index=False):
         # Load the CSV file
         try:
             self.data = pd.read_csv(file_name)
             self.file_name = file_name
-            self.residue_adjustments = {'A': 21, 'B': -82, 'C': -185, 'D': -288}
-            self._adjust_residue_numbers()
+            if adjusted_residue_index:
+                self.residue_adjustments = {'A': 21, 'B': -82, 'C': -185, 'D': -288} # A 21
+                self._adjust_residue_numbers()
         except FileNotFoundError:
             print(f"Error: The file {file_name} was not found.")
         except Exception as e:
@@ -26,8 +30,6 @@ class TorsionAnalyzer:
 
         # Iterate through columns and adjust residue numbers based on chain
         for col in self.data.columns:
-            if 'time_ps' in col:
-                adjusted_data['time_ps']=self.data[col]
             if '-psi' in col or '-phi' in col:
                 # Extract chain and residue index
                 chain, residue_num = col.split('-')[0].split(':')
@@ -71,36 +73,137 @@ class TorsionAnalyzer:
                     print(f"Warning: Missing phi column for next residue {next_residue}.")
         return inter_torsion
 
-    def plot_scatter(self, residue_index):
-        fig, axs = plt.subplots(2, 4, figsize=(20, 10))
-        chains = ['A', 'B', 'C', 'D']
+    # general purpose function to plot scatter plot for a given residue index
+    def plot_scatter(self, residue_index, chains, output_dir='plots'):
+        # Adjust the subplot layout for inter and intra plots
+        n_rows = len(chains)
+        fig, axs = plt.subplots(n_rows, 2, figsize=(12, 5 * n_rows))  # Two columns: one for intra and one for inter
+
+        # Ensure axs is 2D for consistent indexing
+        if len(chains) == 1:
+            axs = [axs]
 
         for i, chain in enumerate(chains):
-            adjusted_index = residue_index + self.residue_adjustments[chain]
             psi_col = f"{chain}:{residue_index}-psi"
             phi_col = f"{chain}:{residue_index}-phi"
             next_phi_col = f"{chain}:{residue_index + 1}-phi"
 
+            # Plot intra-residue scatter plot (φ vs ψ)
             if psi_col in self.data.columns and phi_col in self.data.columns:
-                axs[0, i].scatter(self.data[phi_col], self.data[psi_col], color='blue', alpha=0.6)
-                axs[0, i].set_title(f"{chain} Chain: φ({residue_index}) vs ψ({residue_index})")
-                axs[0, i].set_xlabel(f"φ({residue_index}) (phi)")
-                axs[0, i].set_ylabel(f"ψ({residue_index}) (psi)")
+                axs[i][0].scatter(self.data[phi_col], self.data[psi_col], color='blue', alpha=0.6)
+                axs[i][0].set_title(f"{chain} Chain: φ({residue_index}) vs ψ({residue_index})")
+                axs[i][0].set_xlabel(f"φ({residue_index}) (phi)")
+                axs[i][0].set_ylabel(f"ψ({residue_index}) (psi)")
 
+            # Plot inter-residue scatter plot (next φ vs ψ)
             if psi_col in self.data.columns and next_phi_col in self.data.columns:
-                axs[1, i].scatter(self.data[next_phi_col], self.data[psi_col], color='green', alpha=0.6)
-                axs[1, i].set_title(f"{chain} Chain: φ({residue_index+1}) vs ψ({residue_index})")
-                axs[1, i].set_xlabel(f"φ({residue_index+1}) (phi)")
-                axs[1, i].set_ylabel(f"ψ({residue_index}) (psi)")
+                axs[i][1].scatter(self.data[next_phi_col], self.data[psi_col], color='green', alpha=0.6)
+                axs[i][1].set_title(f"{chain} Chain: φ({residue_index+1}) vs ψ({residue_index})")
+                axs[i][1].set_xlabel(f"φ({residue_index+1}) (phi)")
+                axs[i][1].set_ylabel(f"ψ({residue_index}) (psi)")
 
+        # Adjust layout and save the plot
         plt.tight_layout()
-        plot_file = os.path.join(
-    os.path.dirname(self.file_name), 
-    f"{os.path.basename(self.file_name).replace('.csv', '')}_residue_{residue_index}_scatter.png"
-)
-
-        plt.savefig(plot_file)
-        print(f"Scatter plot saved as {plot_file}")
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        output_file = f"{output_dir}/inter_intra_torsion_scatter_{residue_index}.png"
+        plt.savefig(output_file)
+        print(f"Combined plot saved as {output_file}")
         plt.show()
 
- 
+
+   # general purpose function to plot scatter plot for a given residue index
+    def plot_ramachandran(self, residue_index, PDB_code, chain,  ax):
+        """
+        Plots the Ramachandran plot for a given residue and chain on the provided axis.
+        
+        Parameters:
+            residue_index (int): Residue index.
+            PDB_code (str): PDB code.
+            chain (str): Chain identifier.
+            #analyzer: Data analyzer object containing torsion angle data.
+            ax (matplotlib.axes.Axes): Axis on which to plot.
+        """
+        # import MDAnalysis as mda
+        # from MDAnalysis.analysis.dihedrals import Ramachandran
+        #analyzer =
+        # Download and load the PDB file if not present
+        pdb_file = f"{PDB_code}.pdb"
+        if not os.path.exists(pdb_file):
+            url = f"https://files.rcsb.org/download/{PDB_code}.pdb"
+            urllib.request.urlretrieve(url, pdb_file)
+
+        # Load the structure
+        u = mda.Universe(pdb_file)
+
+        # Select the residue
+        selection = f"resid {residue_index} and segid {chain}"
+        atoms = u.select_atoms(selection)
+
+        if atoms.n_atoms == 0:
+            print(f"Residue {residue_index} not found in chain {chain}")
+            return
+
+        # Perform Ramachandran analysis
+        R = Ramachandran(atoms).run()
+        R.plot(ax=ax, color='black', ref=True)
+
+        # Scatter plot φ and ψ angles for each chain
+        psi_col = f"{chain}:{residue_index}-psi"
+        phi_col = f"{chain}:{residue_index}-phi"
+        if psi_col in self.data.columns and phi_col in self.data.columns:
+            ax.scatter(
+                self.data[phi_col], self.data[psi_col],
+                color='red', alpha=0.6, linewidth=2, marker='o', label=f'Chain {chain}'
+            )
+        ax.set_title(f"Ramachandran Plot: Residue {residue_index}, Chain {chain}")
+        ax.legend()
+
+    def plot_all_ramachandran(self, residue_indices, PDB_code, chains, output_dir='plots'):
+        """
+        Generate and arrange Ramachandran plots for all specified residues and chains in a single figure.
+        
+        Parameters:
+            residue_indices (list): List of residue indices to plot.
+            PDB_code (str): PDB code of the structure.
+            chains (list): List of chain identifiers.
+            #analyzer: Data analyzer object containing torsion angle data (optional).
+            output_dir (str): Directory to save the output plot.
+        """
+        # Determine number of subplots and layout
+        num_plots = len(residue_indices) * len(chains)
+        cols = 3  # Define number of columns
+        rows = ceil(num_plots / cols)
+        
+        fig, axs = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows))
+        axs = axs.flatten()  # Flatten to iterate easily if multiple rows
+        
+        plot_idx = 0
+        for chain in chains:
+            for residue_index in residue_indices:
+                if plot_idx < len(axs):
+                    ax = axs[plot_idx]
+                    try:
+                        # Call the Ramachandran plot function with the current axis
+                        self.plot_ramachandran(
+                            residue_index=residue_index,
+                            PDB_code=PDB_code,
+                            chain=chain,
+                            ax=ax
+                        )
+                    except Exception as e:
+                        print(f"Error plotting residue {residue_index} in chain {chain}: {e}")
+                    plot_idx += 1
+
+        # Hide unused subplots
+        for i in range(plot_idx, len(axs)):
+            fig.delaxes(axs[i])
+
+        # Save and display the combined figure
+        plt.tight_layout()
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        output_file = f"{output_dir}/Combined_Ramachandran_{PDB_code}.png"
+        plt.savefig(output_file)
+        print(f"Combined plot saved as {output_file}")
+        plt.show()

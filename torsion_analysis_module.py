@@ -6,16 +6,31 @@ import MDAnalysis as mda
 from MDAnalysis.analysis.dihedrals import Ramachandran
 import os
 from math import ceil
+import urllib
 
-class TorsionAnalyzer:
-    def __init__(self, file_name, adjusted_residue_index=False):
-        # Load the CSV file
+class TorsionAnalyzer2:
+    def __init__(self, file_name, adjusted_residue_index=True, res_adjust_dic=None):
+        """
+        Initialize the TorsionAnalyzer by loading a CSV file and optionally adjusting residue numbers.
+
+        Parameters:
+            file_name (str): Path to the CSV file to load.
+            adjusted_residue_index (bool): Whether to apply residue number adjustments. Default is True.
+            res_adjust_dic (dict): Dictionary for residue number adjustments. Required if adjusted_residue_index is True.
+        """
         try:
+            # Load the CSV file
             self.data = pd.read_csv(file_name)
             self.file_name = file_name
+
+            # Conditionally adjust residue numbers
             if adjusted_residue_index:
-                self.residue_adjustments = {'A': 21, 'B': -82, 'C': -185, 'D': -288} # A 21
+                if res_adjust_dic is None:
+                    raise ValueError("res_adjust_dic must be provided when adjusted_residue_index is True.")
+                self.residue_adjustments = res_adjust_dic
                 self._adjust_residue_numbers()
+            else:
+                self.residue_adjustments = None
         except FileNotFoundError:
             print(f"Error: The file {file_name} was not found.")
         except Exception as e:
@@ -27,8 +42,7 @@ class TorsionAnalyzer:
         #self.data = self.data[valid_columns]
         # Create an empty dictionary to store adjusted data
         adjusted_data = {}
-
-        # Iterate through columns and adjust residue numbers based on chain
+        
         for col in self.data.columns:
             if '-psi' in col or '-phi' in col:
                 # Extract chain and residue index
@@ -40,6 +54,13 @@ class TorsionAnalyzer:
                     adjusted_residue_num = residue_num + self.residue_adjustments[chain]
                     adjusted_col = f"{chain}:{adjusted_residue_num}-{col.split('-')[1]}"
                     adjusted_data[adjusted_col] = self.data[col]
+                else:
+                    # Keep the original data when no adjustment is applied
+                    adjusted_data[col] = self.data[col]
+            else:
+                # Include columns that do not match the condition
+                adjusted_data[col] = self.data[col]
+                
 
         # Convert the adjusted data back into a DataFrame
         self.data = pd.DataFrame(adjusted_data)
@@ -113,7 +134,7 @@ class TorsionAnalyzer:
 
 
    # general purpose function to plot scatter plot for a given residue index
-    def plot_ramachandran(self, residue_index, PDB_code, chain,  ax):
+    def plot_ramachandran(self, residue_index, PDB_code,PDB_chain, chain,  ax):
         """
         Plots the Ramachandran plot for a given residue and chain on the provided axis.
         
@@ -123,6 +144,7 @@ class TorsionAnalyzer:
             chain (str): Chain identifier.
             #analyzer: Data analyzer object containing torsion angle data.
             ax (matplotlib.axes.Axes): Axis on which to plot.
+            PDB_chain (str): Chain identifier for the PDB file 
         """
         # import MDAnalysis as mda
         # from MDAnalysis.analysis.dihedrals import Ramachandran
@@ -137,11 +159,11 @@ class TorsionAnalyzer:
         u = mda.Universe(pdb_file)
 
         # Select the residue
-        selection = f"resid {residue_index} and segid {chain}"
+        selection = f"resid {residue_index} and segid {PDB_chain}"
         atoms = u.select_atoms(selection)
 
         if atoms.n_atoms == 0:
-            print(f"Residue {residue_index} not found in chain {chain}")
+            print(f"Residue {residue_index} not found in chain {PDB_chain} in PDB {PDB_code}.")
             return
 
         # Perform Ramachandran analysis
@@ -159,7 +181,7 @@ class TorsionAnalyzer:
         ax.set_title(f"Ramachandran Plot: Residue {residue_index}, Chain {chain}")
         ax.legend()
 
-    def plot_all_ramachandran(self, residue_indices, PDB_code, chains, output_dir='plots'):
+    def plot_all_ramachandran(self, residue_indices, PDB_code, PDB_chain, chains, output_dir='plots'):
         """
         Generate and arrange Ramachandran plots for all specified residues and chains in a single figure.
         
@@ -188,6 +210,7 @@ class TorsionAnalyzer:
                         self.plot_ramachandran(
                             residue_index=residue_index,
                             PDB_code=PDB_code,
+                            PDB_chain=PDB_chain,
                             chain=chain,
                             ax=ax
                         )

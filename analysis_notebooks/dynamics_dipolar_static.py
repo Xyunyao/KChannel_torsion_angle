@@ -54,26 +54,106 @@ def calculate_Ip_trajectory(frequencies, dt):
     return Ix_avg, Iy_avg
 
 # --- Step 4: Calculate spectrum ---
-def calculate_spectrum(Ix, dt):
-    fft_vals = np.fft.fft(Ix)
-    freq = np.fft.fftfreq(len(Ix), d=dt)
-    fft_vals = fft_vals * dt
+
+def calculate_spectrum(Ix, dt, window='hann', alpha=3.0, sigma=0.4, position=0.5):
+    """
+    Calculate spectrum using FFT with different window functions.
+
+    Parameters
+    ----------
+    Ix : ndarray, shape (M,)
+        Time-domain trajectory.
+    dt : float
+        Time step for the simulation.
+    window : str, optional
+        Window function type: 'hann', 'hamming', 'blackman', 'exponential', 
+        'gaussian', 'sinebell', or 'none'.
+    alpha : float, optional
+        Decay rate for exponential window (used if window='exponential').
+    sigma : float, optional
+        Standard deviation factor for gaussian window (used if window='gaussian').
+    position : float, optional
+        Relative peak location of gaussian window in [0, 1].
+        0 = start, 0.5 = center, 1 = end.
+
+    Returns
+    -------
+    freq : ndarray
+        Frequency axis.
+    fft_vals : ndarray
+        FFT of windowed Ix trajectory.
+    """
+    N = len(Ix)
+    n = np.arange(N)
+
+    # --- Select window ---
+    if window.lower() == 'hann':
+        w = np.hanning(N)
+    elif window.lower() == 'hamming':
+        w = np.hamming(N)
+    elif window.lower() == 'blackman':
+        w = np.blackman(N)
+    elif window.lower() == 'exponential':
+        w = np.exp(-alpha * n / N)
+    elif window.lower() == 'gaussian':
+        # peak index determined by position parameter
+        peak_idx = position * (N - 1)
+        w = np.exp(-0.5 * ((n - peak_idx) / (sigma * (N-1)/2))**2)
+    elif window.lower() == 'sinebell':
+        w = np.sin(np.pi * n / (N-1))
+    elif window.lower() == 'none':
+        w = np.ones(N)
+    else:
+        raise ValueError(f"Unknown window type '{window}'")
+
+    # --- Apply window to signal ---
+    Ix_win = Ix * w
+
+    # --- FFT ---
+    fft_vals = np.fft.fft(Ix_win) * dt
+    freq = np.fft.fftfreq(N, d=dt)
+
     return freq, fft_vals
+
 
 # --- main script ---
 def main():
     parser = argparse.ArgumentParser(description="Simulate dipolar NMR trajectories and spectra.")
-    parser.add_argument("--S2", type=float, default=0.85, help="Order parameter (default 0.85)")
-    parser.add_argument("--tau_c", type=float, default=0.01, help="Correlation time (default 0.01)")
-    parser.add_argument("--dt", type=float, default=1e-4, help="Time step (default 1e-4)")
-    parser.add_argument("--num_steps", type=int, default=10000, help="Number of time steps (default 10000)")
-    parser.add_argument("--B0", type=float, default=14.1, help="Magnetic field in Tesla (default 14.1)")
-    parser.add_argument("--r", type=float, required=True, help="Internuclear distance in meters")
-    parser.add_argument("--gamma1", type=float, required=True, help="Gyromagnetic ratio of spin1 (rad/T/s)")
-    parser.add_argument("--gamma2", type=float, required=True, help="Gyromagnetic ratio of spin2 (rad/T/s)")
-    parser.add_argument("--plot", action="store_true", help="If set, plot the spectrum.")
-    parser.add_argument("--N", type=int, default=10000, help="Number of ensemble members (default 10000)")
-    parser.add_argument("--output_prefix", type=str, default=None, help="Prefix for saving results (optional)")
+    parser.add_argument("--S2", type=float, default=0.85,
+                        help="Order parameter (default 0.85)")
+    parser.add_argument("--tau_c", type=float, default=0.01,
+                        help="Correlation time (default 0.01)")
+    parser.add_argument("--dt", type=float, default=1e-4,
+                        help="Time step (default 1e-4)")
+    parser.add_argument("--num_steps", type=int, default=10000,
+                        help="Number of time steps (default 10000)")
+    parser.add_argument("--B0", type=float, default=14.1,
+                        help="Magnetic field in Tesla (default 14.1)")
+    parser.add_argument("--r", type=float, required=True,
+                        help="Internuclear distance in meters")
+    parser.add_argument("--gamma1", type=float, required=True,
+                        help="Gyromagnetic ratio of spin1 (rad/T/s)")
+    parser.add_argument("--gamma2", type=float, required=True,
+                        help="Gyromagnetic ratio of spin2 (rad/T/s)")
+    parser.add_argument("--plot", action="store_true",
+                        help="If set, plot the spectrum.")
+    parser.add_argument("--N", type=int, default=10000,
+                        help="Number of ensemble members (default 10000)")
+    parser.add_argument("--output_prefix", type=str, default=None,
+                        help="Prefix for saving results (optional)")
+
+    # --- New parameters for spectrum windowing ---
+    parser.add_argument("--window", type=str, default="hann",
+                        choices=["none", "hann", "hamming", "blackman", 
+                                 "exponential", "gaussian", "sinebell"],
+                        help="Window function for FFT (default: hann)")
+    parser.add_argument("--alpha", type=float, default=3.0,
+                        help="Decay rate for exponential window (default: 3.0)")
+    parser.add_argument("--sigma", type=float, default=0.4,
+                        help="Width factor for Gaussian window (default: 0.4)")
+    parser.add_argument("--position", type=float, default=0.5,
+                        help="Relative peak location for Gaussian window [0..1] (default: 0.5)")
+
     args = parser.parse_args()
 
     # 1. simulate trajectory (single vector path)

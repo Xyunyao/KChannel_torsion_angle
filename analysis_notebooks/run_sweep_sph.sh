@@ -5,13 +5,13 @@ S2_values=(0.1 0.3 0.5 0.7 1.0)
 tau_c_values=(0.001)   # 100 kHz, 10 kHz, 1 kHz
 
 # Fixed parameters (edit these as needed)
-dt=0.000001
-num_steps=8000
+dt=0.0001
+num_steps=4000
 B0=14.1
 r=1.02e-10                 # example distance in meters
 gamma1=2.675e8             # gyromagnetic ratio for proton in rad/s/T
 gamma2=2.713e7             # gyromagnetic ratio for nitrogen-15 in rad/s/T
-N=20000                    # number of ensemble members
+N=100000                    # number of ensemble members
 wigner_file_path="/Users/yunyao_1/Dropbox/KcsA/analysis/lib"
 
 # Output directory

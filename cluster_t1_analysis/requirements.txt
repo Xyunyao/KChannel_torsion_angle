@@ -1,0 +1,12 @@
+# Python Requirements for T1 Anisotropy Analysis
+# Create conda environment with:
+#   conda create -n kcsa_torsion python=3.8
+#   conda activate kcsa_torsion
+#   pip install -r requirements.txt
+
+numpy>=1.19.0
+scipy>=1.5.0
+sympy>=1.6.0
+matplotlib>=3.3.0
+pandas>=1.1.0
+numba>=0.51.0

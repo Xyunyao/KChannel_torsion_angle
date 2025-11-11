@@ -158,12 +158,12 @@ class NMRParametersCalculator:
         # J(0)
         J_values['J_0'] = spectral_density[0]
         
-        # J(ωN)
+        # J(ω₀) for observed nucleus
         if frequency_markers and 'omega_nucleus' in frequency_markers:
-            J_values['J_omega_N'] = frequency_markers['omega_nucleus'][1]
+            J_values['J_omega'] = frequency_markers['omega_nucleus'][1]
         else:
             idx = np.argmin(np.abs(frequencies - omega_nucleus))
-            J_values['J_omega_N'] = spectral_density[idx]
+            J_values['J_omega'] = spectral_density[idx]
         
         # For dipolar, need J(ωH), J(ωH±ωN)
         if self.config.interaction_type == 'dipolar':
@@ -171,15 +171,15 @@ class NMRParametersCalculator:
             idx_H = np.argmin(np.abs(frequencies - omega_H))
             J_values['J_omega_H'] = spectral_density[idx_H]
             
-            # J(ωH - ωN)
+            # J(ωH - ωX) where X is the observed nucleus
             omega_diff = omega_H - omega_nucleus
             idx_diff = np.argmin(np.abs(frequencies - omega_diff))
-            J_values['J_omega_H_minus_N'] = spectral_density[idx_diff]
+            J_values['J_omega_H_minus_X'] = spectral_density[idx_diff]
             
-            # J(ωH + ωN)
+            # J(ωH + ωX)
             omega_sum = omega_H + omega_nucleus
             idx_sum = np.argmin(np.abs(frequencies - omega_sum))
-            J_values['J_omega_H_plus_N'] = spectral_density[idx_sum]
+            J_values['J_omega_H_plus_X'] = spectral_density[idx_sum]
         
         if self.config.verbose:
             print(f"\n  Spectral density values:")
@@ -192,7 +192,9 @@ class NMRParametersCalculator:
         """
         Calculate T1 for CSA relaxation using universal formula.
         
-        R1 = (1/T1) = ω₀² × J(ω₀) × 10⁻¹²
+        R1 = (1/T1) = f₀² × J(ω₀) × 10⁻¹²
+        
+        where f₀ is the Larmor frequency in Hz (NOT rad/s).
         
         This formula works for ANY CSA tensor (any η value) when the correlation 
         function is calculated from Y2m spherical harmonics with CSA in ppm.
@@ -203,7 +205,7 @@ class NMRParametersCalculator:
         2. Compute rotated correlation matrix C(m,m',τ)
         3. Extract C(1,1,τ) (or other diagonal elements)
         4. Calculate spectral density J(ω)
-        5. Use R1 = ω₀² × J(ω₀) × 10⁻¹²
+        5. Use R1 = f₀² × J(ω₀) × 10⁻¹² (f₀ in Hz)
         
         IMPORTANT: This formula expects J(ω) from correlation functions that
         ALREADY CONTAIN the CSA magnitude in ppm. Do NOT use this with normalized
@@ -219,15 +221,17 @@ class NMRParametersCalculator:
         T1 : float
             Longitudinal relaxation time (seconds)
         """
-        omega_N = self.config.get_omega0()
-        larmor_frequency = omega_N / (2 * np.pi)  # Convert to Hz
+        omega_0 = self.config.get_omega0()  # rad/s
+        larmor_frequency_Hz = omega_0 / (2 * np.pi)  # Hz
         
         # J(ω₀) - spectral density at Larmor frequency
-        J_omega_N = J_values['J_omega_N']
+        J_omega_0 = J_values['J_omega']
         
-        # R1 = ω₀² × J(ω₀) × 10⁻¹²
+        # R1 = f₀² × J(ω₀) × 10⁻¹²
+        # where f₀ is in Hz (NOT rad/s!)
         # The 10⁻¹² comes from ppm² in the correlation function
-        R1_csa = (larmor_frequency**2) * J_omega_N * 1e-12
+        # This matches the reference implementation in t1_anisotropy_analysis.py
+        R1_csa = (larmor_frequency_Hz**2) * J_omega_0 * 1e-12
         
         T1 = 1.0 / R1_csa
         
@@ -235,8 +239,8 @@ class NMRParametersCalculator:
         
         if self.config.verbose:
             print(f"\n  CSA T1 calculation (universal formula, any η):")
-            print(f"    ω₀: {omega_N:.2e} rad/s ({larmor_frequency:.2e} Hz)")
-            print(f"    J(ω₀): {J_omega_N:.2e} s")
+            print(f"    ω₀: {omega_0:.2e} rad/s ({larmor_frequency_Hz:.2e} Hz)")
+            print(f"    J(ω₀): {J_omega_0:.2e} s")
             print(f"    R1_CSA: {R1_csa:.3f} s⁻¹")
             print(f"    Note: Correlation function must be in ppm² units")
         
@@ -246,7 +250,9 @@ class NMRParametersCalculator:
         """
         Calculate T1 for uniaxial CSA relaxation (η = 0) using analytical formula.
         
-        R1 = (1/T1) = (1/3) × (ω₀ × Δσ)² × J(ω₀)
+        R1 = (1/T1) = (1/3) × (f₀ × Δσ)² × J(ω₀)
+        
+        where f₀ is Larmor frequency in Hz and Δσ is in ppm (as dimensionless).
         
         This is the analytical formula from Lipari-Szabo theory for uniaxial CSA.
         Only valid for axially symmetric CSA tensor (η = 0).
@@ -269,18 +275,20 @@ class NMRParametersCalculator:
         T1 : float
             Longitudinal relaxation time (seconds)
         """
-        omega_0 = self.config.get_omega0()
-        delta_sigma = self.config.delta_sigma if hasattr(self.config, 'delta_sigma') else 100.0
+        omega_0 = self.config.get_omega0()  # rad/s
+        larmor_freq_Hz = omega_0 / (2 * np.pi)  # Hz
+        delta_sigma = self.config.delta_sigma if hasattr(self.config, 'delta_sigma') else 100.0  # ppm
         
-        # Convert Δσ from ppm to absolute (rad/s)
-        # Δσ_abs = Δσ_ppm × 10⁻⁶ × ω₀
-        delta_sigma_rad = delta_sigma * 1e-6 * omega_0
+        # Δσ in ppm is dimensionless (parts per million)
+        # Convert to absolute by: Δσ_abs = Δσ_ppm × 10⁻⁶ × f₀_Hz
+        delta_sigma_abs_Hz = delta_sigma * 1e-6 * larmor_freq_Hz  # Hz
         
-        # R1_CSA = (1/3) × (ω₀ × Δσ)² × J(ω₀)
-        # Valid only for η = 0 (uniaxial CSA)
-        J_omega_0 = J_values['J_omega_N']
+        # R1_CSA = (1/3) × (f₀ × Δσ_ppm × 10⁻⁶)² × J(ω₀)
+        # where f₀ is in Hz, Δσ_ppm is dimensionless
+        # This gives proper units: (1/3) × Hz² × 10⁻¹² × s = s⁻¹
+        J_omega_0 = J_values['J_omega']
         
-        R1_csa = (1.0/3.0) * (delta_sigma_rad)**2 * J_omega_0
+        R1_csa = (1.0/3.0) * (delta_sigma_abs_Hz)**2 * J_omega_0
         
         T1 = 1.0 / R1_csa
         
@@ -288,8 +296,8 @@ class NMRParametersCalculator:
         
         if self.config.verbose:
             print(f"\n  CSA T1 calculation (analytical, η=0 only):")
-            print(f"    ω₀: {omega_0:.2e} rad/s")
-            print(f"    Δσ: {delta_sigma} ppm ({delta_sigma_rad:.2e} rad/s)")
+            print(f"    f₀: {larmor_freq_Hz:.2e} Hz (ω₀ = {omega_0:.2e} rad/s)")
+            print(f"    Δσ: {delta_sigma} ppm = {delta_sigma_abs_Hz:.2e} Hz")
             print(f"    J(ω₀): {J_omega_0:.2e}")
             print(f"    R1_CSA: {R1_csa:.3f} s⁻¹")
         
@@ -316,12 +324,12 @@ class NMRParametersCalculator:
         # Dipolar coupling constant
         d = self._calculate_dipolar_constant()
         
-        # R1 = (d²/4) × [J(ωH-ωN) + 3J(ωN) + 6J(ωH+ωN)]
-        J_diff = J_values['J_omega_H_minus_N']
-        J_N = J_values['J_omega_N']
-        J_sum = J_values['J_omega_H_plus_N']
+        # R1 = (d²/4) × [J(ωH-ωX) + 3J(ωX) + 6J(ωH+ωX)]
+        J_diff = J_values['J_omega_H_minus_X']
+        J_nucleus = J_values['J_omega']
+        J_sum = J_values['J_omega_H_plus_X']
         
-        R1_dipolar = (d**2 / 4.0) * (J_diff + 3*J_N + 6*J_sum)
+        R1_dipolar = (d**2 / 4.0) * (J_diff + 3*J_nucleus + 6*J_sum)
         
         T1 = 1.0 / R1_dipolar
         
@@ -330,9 +338,9 @@ class NMRParametersCalculator:
         if self.config.verbose:
             print(f"\n  Dipolar T1 calculation:")
             print(f"    d: {d:.2e} rad/s")
-            print(f"    J(ωH-ωN): {J_diff:.2e}")
-            print(f"    J(ωN): {J_N:.2e}")
-            print(f"    J(ωH+ωN): {J_sum:.2e}")
+            print(f"    J(ωH-ωX): {J_diff:.2e}")
+            print(f"    J(ωX): {J_nucleus:.2e}")
+            print(f"    J(ωH+ωX): {J_sum:.2e}")
             print(f"    R1_dipolar: {R1_dipolar:.3f} s⁻¹")
         
         return T1
@@ -353,14 +361,14 @@ class NMRParametersCalculator:
         T2 : float
             Transverse relaxation time (seconds)
         """
-        omega_N = self.config.get_omega0()
+        omega_0 = self.config.get_omega0()
         delta_sigma = self.config.delta_sigma if hasattr(self.config, 'delta_sigma') else 100.0
-        delta_sigma_rad = delta_sigma * 1e-6 * omega_N
+        delta_sigma_rad = delta_sigma * 1e-6 * omega_0
         
         J_0 = J_values['J_0']
-        J_omega_N = J_values['J_omega_N']
+        J_omega_0 = J_values['J_omega']
         
-        R2_csa = (1.0/15.0) * (delta_sigma_rad)**2 * (4*J_0 + 3*J_omega_N)
+        R2_csa = (1.0/15.0) * (delta_sigma_rad)**2 * (4*J_0 + 3*J_omega_0)
         
         T2 = 1.0 / R2_csa
         
@@ -369,7 +377,7 @@ class NMRParametersCalculator:
         if self.config.verbose:
             print(f"\n  CSA T2 calculation:")
             print(f"    J(0): {J_0:.2e}")
-            print(f"    J(ωN): {J_omega_N:.2e}")
+            print(f"    J(ω₀): {J_omega_0:.2e}")
             print(f"    R2_CSA: {R2_csa:.3f} s⁻¹")
         
         return T2
@@ -393,12 +401,12 @@ class NMRParametersCalculator:
         d = self._calculate_dipolar_constant()
         
         J_0 = J_values['J_0']
-        J_diff = J_values['J_omega_H_minus_N']
-        J_N = J_values['J_omega_N']
+        J_diff = J_values['J_omega_H_minus_X']
+        J_nucleus = J_values['J_omega']
         J_H = J_values['J_omega_H']
-        J_sum = J_values['J_omega_H_plus_N']
+        J_sum = J_values['J_omega_H_plus_X']
         
-        R2_dipolar = (d**2 / 8.0) * (4*J_0 + J_diff + 3*J_N + 6*J_H + 6*J_sum)
+        R2_dipolar = (d**2 / 8.0) * (4*J_0 + J_diff + 3*J_nucleus + 6*J_H + 6*J_sum)
         
         T2 = 1.0 / R2_dipolar
         
@@ -469,20 +477,20 @@ class NMRParametersCalculator:
             return 1.0
         
         gamma_H = GAMMA['1H']
-        gamma_N = GAMMA[self.config.nucleus]
+        gamma_X = GAMMA[self.config.nucleus]
         
         d = self._calculate_dipolar_constant()
         
-        J_diff = J_values['J_omega_H_minus_N']
-        J_sum = J_values['J_omega_H_plus_N']
+        J_diff = J_values['J_omega_H_minus_X']
+        J_sum = J_values['J_omega_H_plus_X']
         
         # Need R1 for NOE
         if self.R1_dipolar is None:
-            R1 = (d**2 / 4.0) * (J_diff + 3*J_values['J_omega_N'] + 6*J_sum)
+            R1 = (d**2 / 4.0) * (J_diff + 3*J_values['J_omega'] + 6*J_sum)
         else:
             R1 = self.R1_dipolar
         
-        NOE = 1 + (gamma_H / gamma_N) * (d**2 / (4 * R1)) * (6*J_sum - J_diff)
+        NOE = 1 + (gamma_H / gamma_X) * (d**2 / (4 * R1)) * (6*J_sum - J_diff)
         
         self.NOE = NOE
         

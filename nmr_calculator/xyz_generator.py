@@ -12,9 +12,15 @@ Supported trajectory types:
    - Motion restricted to cone surface (β = θ_cone, fixed)
    - Azimuthal diffusion only
    - S² = ((1 + cos(θ)) × cos(θ) / 2)²
+
+3. Vector on cone with OU process - 'vector_on_cone'
+   - Unit vector diffusion on cone surface
+   - Azimuthal angle follows Ornstein-Uhlenbeck process
+   - Simpler model with direct vector generation
+   - S² = from Lipari-Szabo: cos(θ) = √((2*S² + 1) / 3)
    
-3. Custom trajectory (user-defined function) - 'custom'
-4. Load from file (MD trajectory) - 'from_file'
+4. Custom trajectory (user-defined function) - 'custom'
+5. Load from file (MD trajectory) - 'from_file'
 """
 
 import numpy as np
@@ -66,6 +72,8 @@ class TrajectoryGenerator:
             return self.generate_diffusion_cone()
         elif self.config.trajectory_type == 'diffusion_cone_edge':
             return self.generate_diffusion_cone_edge()
+        elif self.config.trajectory_type == 'vector_on_cone':
+            return self.generate_vector_on_cone_trajectory()
         elif self.config.trajectory_type == 'custom':
             return self.generate_custom()
         elif self.config.trajectory_type == 'from_file':
@@ -270,6 +278,44 @@ class TrajectoryGenerator:
         if self.config.verbose:
             print(f"\n  ✓ Generated {len(rotations)} rotation matrices")
             print(f"  ✓ All rotations at fixed β = {np.degrees(theta_cone):.2f}°")
+        
+        self.rotations = rotations
+        return rotations, None
+    
+    def generate_vector_on_cone_trajectory(self) -> Tuple[List[R], None]:
+        """
+        Generate trajectory using vector-on-cone diffusion (wrapper for simulate_vector_on_cone).
+        
+        This method generates unit vectors on a cone surface and converts them to
+        rotation matrices for compatibility with the NMR calculation pipeline.
+        
+        Returns
+        -------
+        rotations : List[Rotation]
+            List of rotation matrices representing vector orientations
+        coordinates : None
+            No Cartesian coordinates for this model
+        """
+        # Generate vectors using the existing simulate_vector_on_cone method
+        vectors = self.simulate_vector_on_cone()
+        
+        # Convert vectors to rotations
+        # Each vector represents a z-axis orientation, we convert to rotation matrix
+        rotations = []
+        reference_vector = np.array([0, 0, 1])  # z-axis
+        
+        for vec in vectors:
+            # Normalize vector
+            vec_norm = vec / np.linalg.norm(vec)
+            
+            # Create rotation that aligns reference vector to current vector
+            # Using the Rodriguez rotation formula implemented in scipy
+            rot_matrix = self._rotation_matrix_from_vectors(reference_vector, vec_norm)
+            rotation = R.from_matrix(rot_matrix)
+            rotations.append(rotation)
+        
+        if self.config.verbose:
+            print(f"  ✓ Converted {len(vectors)} vectors to rotation matrices")
         
         self.rotations = rotations
         return rotations, None

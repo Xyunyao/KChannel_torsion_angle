@@ -15,6 +15,42 @@ from typing import Dict, Optional, Tuple, Union
 from .config import NMRConfig
 
 
+def moving_average(data: np.ndarray, window_size: int, axis: int = 0) -> np.ndarray:
+    """
+    Compute a moving average over a sliding window along a given axis.
+    
+    Uses convolution with a uniform kernel for smoothing.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Input data (1D or multi-dimensional).
+    window_size : int
+        Size of the moving window.
+    axis : int, optional
+        Axis along which to apply the moving average (default is 0).
+
+    Returns
+    -------
+    np.ndarray
+        Smoothed array of the same shape as input.
+    """
+    if window_size < 1:
+        raise ValueError("window_size must be >= 1")
+
+    data = np.asarray(data, dtype=float)
+    kernel = np.ones(window_size) / window_size
+
+    # Move the specified axis to the front, apply convolution, then restore original order
+    data_swapped = np.moveaxis(data, axis, 0)
+    smoothed = np.apply_along_axis(
+        lambda m: np.convolve(m, kernel, mode='same'),
+        axis=0,
+        arr=data_swapped
+    )
+    return np.moveaxis(smoothed, 0, axis)
+
+
 class SpectralDensityCalculator:
     """
     Calculate spectral density from autocorrelation function.
@@ -80,16 +116,24 @@ class SpectralDensityCalculator:
             print(f"  Time range: 0 to {time_lags[-1]:.2e} s")
             print(f"  Zero-fill factor: {zero_fill_factor}×")
         
+        # Subtract DC offset (average of last 100 points)
+        n_offset_points = min(100, len(acf))
+        dc_offset = np.mean(acf[-n_offset_points:])
+        acf_corrected = acf - dc_offset
+        
+        if self.config.verbose:
+            print(f"  DC offset (avg of last {n_offset_points} points): {dc_offset:.2e}")
+        
         # Apply zero-filling
         if zero_fill_factor > 1:
-            n_fill = int(len(acf) * (zero_fill_factor - 1))
-            acf_filled = np.concatenate([acf, np.zeros(n_fill)])
+            n_fill = int(len(acf_corrected) * (zero_fill_factor - 1))
+            acf_filled = np.concatenate([acf_corrected, np.zeros(n_fill)])
             
             # Extend time axis
             dt = time_lags[1] - time_lags[0] if len(time_lags) > 1 else self.config.dt
             time_filled = np.arange(len(acf_filled)) * dt
         else:
-            acf_filled = acf
+            acf_filled = acf_corrected
             time_filled = time_lags
         
         if self.config.verbose and zero_fill_factor > 1:
@@ -97,6 +141,13 @@ class SpectralDensityCalculator:
         
         # Calculate spectral density using FFT
         spectral_density, frequencies = self._fft_spectral_density(acf_filled, time_filled)
+        
+        # Apply moving average smoothing
+        smoothing_window = self.config.smoothing_window if hasattr(self.config, 'smoothing_window') else 5
+        if smoothing_window > 1:
+            spectral_density = moving_average(spectral_density, smoothing_window, axis=0)
+            if self.config.verbose:
+                print(f"  Applied moving average smoothing (window={smoothing_window})")
         
         # Calculate at specific frequency markers
         if self.config.frequency_markers:

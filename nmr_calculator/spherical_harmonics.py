@@ -116,6 +116,16 @@ class SphericalHarmonicsCalculator:
             '1': sp.S(0),
             '2': sp.Rational(1, 2) * (self.delta_xx - self.delta_yy)
         }
+
+        # add Dipolar tensor in PAS
+
+        # self.Dipolar_T_2m={
+        #         -2: sp.S(0),
+        #         -1: ,
+        #         0: ,
+        #         1:,
+        #         2: 
+        #       }
         
         # Construct full Wigner D-matrix for l=2
         m_values = [-2, -1, 0, 1, 2]

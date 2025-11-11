@@ -107,6 +107,8 @@ class NMRConfig:
     # Spectral density (Module 6)
     zero_fill_factor : int
         Zero-padding factor for FFT (1 = no padding)
+    smoothing_window : int
+        Window size for moving average smoothing of spectral density (1 = no smoothing)
     frequency_markers : list
         List of nuclei to mark on spectral density plot
     
@@ -159,6 +161,7 @@ class NMRConfig:
     
     # Spectral density
     zero_fill_factor: int = 1  # No zero-filling by default
+    smoothing_window: int = 5  # Moving average window size for spectral density smoothing
     frequency_markers: list = field(default_factory=lambda: ['1H', '13C', '15N', '31P'])
     
     # NMR parameters
@@ -234,6 +237,7 @@ Autocorrelation:
 
 Spectral Density:
   • Zero-fill factor = {self.zero_fill_factor}×
+  • Smoothing window = {self.smoothing_window}
   • Frequency markers = {', '.join(self.frequency_markers)}
 
 NMR Parameters:

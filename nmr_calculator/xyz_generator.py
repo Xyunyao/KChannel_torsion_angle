@@ -308,9 +308,9 @@ class TrajectoryGenerator:
             # Normalize vector
             vec_norm = vec / np.linalg.norm(vec)
             
-            # Create rotation that aligns reference vector to current vector
+            # Create rotation that aligns current vector to reference vector
             # Using the Rodriguez rotation formula implemented in scipy
-            rot_matrix = self._rotation_matrix_from_vectors(reference_vector, vec_norm)
+            rot_matrix = self._rotation_matrix_from_vectors(vec_norm,reference_vector)
             rotation = R.from_matrix(rot_matrix)
             rotations.append(rotation)
         

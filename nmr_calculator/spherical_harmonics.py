@@ -77,10 +77,10 @@ class SphericalHarmonicsCalculator:
         
     def _setup_symbolic_tensors(self):
         """
-        Setup symbolic tensor definitions for CSA using Wigner D-matrix formalism.
+        Setup symbolic tensor definitions for CSA or Dipolar using Wigner D-matrix formalism.
         
         This method creates symbolic expressions for:
-        1. CSA tensor components in PAS: T_2m = {-2, -1, 0, 1, 2}
+        1. Interaction tensor components in PAS: T_2m = {-2, -1, 0, 1, 2}
         2. Wigner D-matrix for l=2 rotation
         3. Transformed tensor in lab frame: D_2 * T_2m
         
@@ -95,6 +95,13 @@ class SphericalHarmonicsCalculator:
             T_2^{1}  = 0
             T_2^{2}  = (δ_xx - δ_yy) / 2
         
+        Dipolar tensor in PAS (axially symmetric along z):
+            T_2^{-2} = 0
+            T_2^{-1} = 0
+            T_2^{0}  = sqrt(3/2) * D_coupling
+            T_2^{1}  = 0
+            T_2^{2}  = 0
+        
         Wigner D-matrix elements (l=2):
             D_{m1,m2}^{(2)}(α,β,γ) = exp(-i*m1*α) * d_{m1,m2}^{(2)}(β) * exp(-i*m2*γ)
         
@@ -107,27 +114,9 @@ class SphericalHarmonicsCalculator:
         self.alpha, self.beta, self.gamma = sp.symbols('alpha beta gamma', real=True)
         self.delta_xx, self.delta_yy, self.delta_zz = sp.symbols('delta_xx delta_yy delta_zz', real=True)
         self.iso = sp.symbols('iso', real=True)
+        self.D_coupling = sp.symbols('D_coupling', real=True)
         
-        # CSA tensor in PAS (5 components for l=2)
-        self.CSA_T_2m = {
-            '-2': sp.Rational(1, 2) * (self.delta_xx - self.delta_yy),
-            '-1': sp.S(0),
-            '0': sp.sqrt(sp.Rational(3, 2)) * (self.delta_zz - (self.delta_xx + self.delta_yy + self.delta_zz) / 3),
-            '1': sp.S(0),
-            '2': sp.Rational(1, 2) * (self.delta_xx - self.delta_yy)
-        }
-
-        # add Dipolar tensor in PAS
-
-        # self.Dipolar_T_2m={
-        #         -2: sp.S(0),
-        #         -1: ,
-        #         0: ,
-        #         1:,
-        #         2: 
-        #       }
-        
-        # Construct full Wigner D-matrix for l=2
+        # Construct full Wigner D-matrix for l=2 (shared by both interactions)
         m_values = [-2, -1, 0, 1, 2]
         self.D_2 = sp.zeros(5, 5)
         for i, m1 in enumerate(m_values):
@@ -137,12 +126,37 @@ class SphericalHarmonicsCalculator:
                                   Rotation.d(2, m1, m2, self.beta) * 
                                   sp.exp(-sp.I * m2 * self.gamma))
         
+        # CSA tensor in PAS (5 components for l=2)
+        self.CSA_T_2m = {
+            '-2': sp.Rational(1, 2) * (self.delta_xx - self.delta_yy),
+            '-1': sp.S(0),
+            '0': sp.sqrt(sp.Rational(3, 2)) * (self.delta_zz - (self.delta_xx + self.delta_yy + self.delta_zz) / 3),
+            '1': sp.S(0),
+            '2': sp.Rational(1, 2) * (self.delta_xx - self.delta_yy)
+        }
+        
+        # Dipolar tensor in PAS (axially symmetric along z-axis)
+        # Standard normalization for dipolar: T_2^0 = -sqrt(6) * D_coupling
+        # This gives the correct (3cos²θ - 1)/2 angular dependence
+        self.Dipolar_T_2m = {
+            '-2': sp.S(0),
+            '-1': sp.S(0),
+            '0': -sp.sqrt(6) * self.D_coupling,
+            '1': sp.S(0),
+            '2': sp.S(0)
+        }
+        
         # Transform CSA tensor: Y_2^m = D_2 * T_2m
-        T_2m_matrix = sp.Matrix([self.CSA_T_2m[str(m)] for m in m_values])
-        self.CSA_transformed = self.D_2 * T_2m_matrix
+        T_2m_CSA_matrix = sp.Matrix([self.CSA_T_2m[str(m)] for m in m_values])
+        self.CSA_transformed = self.D_2 * T_2m_CSA_matrix
         self.CSA_transformed = sp.simplify(self.CSA_transformed)
         
-        # Lambdify for numerical evaluation (creates fast numpy functions)
+        # Transform Dipolar tensor: Y_2^m = D_2 * T_2m
+        T_2m_Dipolar_matrix = sp.Matrix([self.Dipolar_T_2m[str(m)] for m in m_values])
+        self.Dipolar_transformed = self.D_2 * T_2m_Dipolar_matrix
+        self.Dipolar_transformed = sp.simplify(self.Dipolar_transformed)
+        
+        # Lambdify CSA for numerical evaluation (creates fast numpy functions)
         self.CSA_Y_lm_funcs = []
         for m in range(-2, 3):
             expr = self.CSA_transformed[m + 2]  # Index: m+2 maps [-2,2] to [0,4]
@@ -151,12 +165,30 @@ class SphericalHarmonicsCalculator:
                               expr, modules='numpy')
             self.CSA_Y_lm_funcs.append(func)
         
+        # Lambdify Dipolar for numerical evaluation
+        self.Dipolar_Y_lm_funcs = []
+        for m in range(-2, 3):
+            expr = self.Dipolar_transformed[m + 2]  # Index: m+2 maps [-2,2] to [0,4]
+            func = sp.lambdify((self.alpha, self.beta, self.gamma, self.D_coupling), 
+                              expr, modules='numpy')
+            self.Dipolar_Y_lm_funcs.append(func)
+        
         if self.config.verbose:
             print("Symbolic tensor setup complete:")
-            print(f"  - CSA tensor T_2m defined in PAS")
             print(f"  - Wigner D-matrix (5×5) constructed for l=2")
-            print(f"  - Transformation D_2 * T_2m computed symbolically")
-            print(f"  - 5 lambda functions created for Y_2^m (m=-2...2)")
+            if self.config.interaction_type == 'CSA':
+                print(f"  - CSA tensor T_2m defined in PAS")
+                print(f"  - Transformation D_2 * T_2m(CSA) computed symbolically")
+                print(f"  - 5 lambda functions created for CSA Y_2^m (m=-2...2)")
+            elif self.config.interaction_type == 'dipolar':
+                print(f"  - Dipolar tensor T_2m defined in PAS (axially symmetric)")
+                print(f"  - Transformation D_2 * T_2m(Dipolar) computed symbolically")
+                print(f"  - 5 lambda functions created for Dipolar Y_2^m (m=-2...2)")
+            else:
+                print(f"  - Both CSA and Dipolar tensors prepared")
+                print(f"  - 5 lambda functions created for each interaction type")
+
+
 
     @staticmethod
     def _wigner_d_matrix_l2(beta):
@@ -476,7 +508,8 @@ class SphericalHarmonicsCalculator:
         Calculate Y₂ₘ coefficients for dipolar coupling.
         
         Dipolar coupling is axially symmetric (η = 0) along internuclear vector.
-        Only Y₂₀ component is non-zero.
+        For simple cases, only Y₂₀ component is non-zero, but full Wigner D-matrix
+        rotation is used if sympy mode is enabled.
         
         Dipolar coupling constant:
             D = -(μ₀/4π) × (γᵢγⱼℏ) / r³
@@ -493,24 +526,65 @@ class SphericalHarmonicsCalculator:
         """
         if self.config.verbose:
             print(f"  Dipolar coupling (axially symmetric)")
-            print(f"  Only Y₂₀ component calculated")
         
         n_steps = euler_angles.shape[0]
         Y2m_coefficients = np.zeros((n_steps, 5), dtype=complex)
         
-        # Extract beta (polar angle)
-        beta = euler_angles[:, 1]
+        # Extract Euler angles
+        alpha = euler_angles[:, 0]  # φ
+        beta = euler_angles[:, 1]   # θ
+        gamma = euler_angles[:, 2]  # ψ
         
-        # Dipolar coupling constant (placeholder)
-        # User should provide or calculate based on nuclei and distance
-        D_coupling = 10000.0  # Hz (typical for 15N-1H at 1.02 Å)
-        
-        # Y₂₀ component (axial)
-        Y2m_coefficients[:, 2] = D_coupling * (3 * np.cos(beta)**2 - 1) / 2
+        # Dipolar coupling constant
+        # User can provide via config or we use a typical value
+        if hasattr(self.config, 'D_coupling') and self.config.D_coupling is not None:
+            D_coupling = self.config.D_coupling
+        else:
+            D_coupling = 10000.0  # Hz (typical for 15N-1H at 1.02 Å)
         
         if self.config.verbose:
             print(f"  D coupling constant: {D_coupling:.1f} Hz")
-            print(f"  Y₂₀ mean: {np.mean(np.abs(Y2m_coefficients[:, 2])):.2f}")
+        
+        # Evaluate Y_2^m using chosen method
+        if self.use_sympy:
+            # Method 1: Sympy symbolic calculation (full Wigner D-matrix)
+            for m_idx, m in enumerate(range(-2, 3)):
+                func = self.Dipolar_Y_lm_funcs[m_idx]
+                Y2m_coefficients[:, m_idx] = func(alpha, beta, gamma, D_coupling)
+            if self.config.verbose:
+                print(f"  Using sympy-based symbolic Wigner D-matrix calculation")
+        else:
+            # Method 2: NumPy with Wigner D-matrix (same as sympy but faster)
+            # Dipolar tensor in PAS (axially symmetric along z-axis)
+            # Note: Do NOT include sqrt(3/2) here - it's already in the Wigner d-matrix!
+            T_2m_dipolar = np.array([
+                0.0,         # T_2^{-2}
+                0.0,         # T_2^{-1}
+                -np.sqrt(6)*D_coupling,  # T_2^{0} - just D_coupling, no sqrt(3/2) factor
+                0.0,         # T_2^{1}
+                0.0          # T_2^{2}
+            ])
+            
+            # Get Wigner D-matrix
+            D_matrix = self._calculate_wigner_D_matrix_l2_numpy(alpha, beta, gamma)
+            
+            # Transform: Y_2^m = D * T_2m
+            Y2m_coefficients = np.einsum('nij,j->ni', D_matrix, T_2m_dipolar)
+            
+            if self.config.verbose:
+                print(f"  Using NumPy-optimized Wigner D-matrix calculation")
+        
+        # Take real part
+        Y2m_coefficients = np.real(Y2m_coefficients)
+        
+        if self.config.verbose:
+            print(f"\n  Y₂ₘ statistics:")
+            for m in range(-2, 3):
+                m_idx = m + 2
+                mean_val = np.mean(np.abs(Y2m_coefficients[:, m_idx]))
+                std_val = np.std(np.abs(Y2m_coefficients[:, m_idx]))
+                if mean_val > 1e-10:  # Only print non-zero components
+                    print(f"    Y₂^{m:+d}: mean={mean_val:.3f}, std={std_val:.3f}")
         
         return Y2m_coefficients
     

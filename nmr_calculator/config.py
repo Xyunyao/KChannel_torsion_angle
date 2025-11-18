@@ -89,6 +89,8 @@ class NMRConfig:
         CSA anisotropy in ppm
     eta : float
         CSA asymmetry parameter (0 <= eta <= 1)
+    D_coupling : Optional[float]
+        Dipolar coupling constant in Hz (e.g., 10000 Hz for 15N-1H at 1.02 Å)
     
     # Autocorrelation (Module 4)
     max_lag : int
@@ -149,6 +151,7 @@ class NMRConfig:
     csa_tensor: Optional[np.ndarray] = None
     delta_sigma: float = 50.0  # ppm
     eta: float = 0.0  # Axially symmetric
+    D_coupling: Optional[float] = None  # Dipolar coupling constant in Hz (e.g., 10000 Hz for 15N-1H)
     
     # Autocorrelation
     max_lag: int = 5000

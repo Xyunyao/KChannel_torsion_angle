@@ -282,7 +282,7 @@ class TrajectoryGenerator:
         self.rotations = rotations
         return rotations, None
     
-    def generate_vector_on_cone_trajectory(self) -> Tuple[List[R], None]:
+    def generate_vector_on_cone_trajectory(self) -> Tuple[List[R], np.ndarray]:
         """
         Generate trajectory using vector-on-cone diffusion (wrapper for simulate_vector_on_cone).
         
@@ -293,11 +293,19 @@ class TrajectoryGenerator:
         -------
         rotations : List[Rotation]
             List of rotation matrices representing vector orientations
-        coordinates : None
-            No Cartesian coordinates for this model
+        vectors : np.ndarray
+            Array of unit vectors with shape (num_steps, 3)
         """
         # Generate vectors using the existing simulate_vector_on_cone method
-        vectors = self.simulate_vector_on_cone()
+        # Pass all parameters explicitly from config (though they have defaults)
+        axis = self.config.cone_axis if self.config.cone_axis is not None else np.array([0, 0, 1])
+        vectors = self.simulate_vector_on_cone(
+            S2=self.config.S2,
+            tau_c=self.config.tau_c,
+            dt=self.config.dt,
+            num_steps=self.config.num_steps,
+            axis=axis
+        )
         
         # Convert vectors to rotations
         # Each vector represents a z-axis orientation, we convert to rotation matrix
@@ -310,7 +318,7 @@ class TrajectoryGenerator:
             
             # Create rotation that aligns current vector to reference vector
             # Using the Rodriguez rotation formula implemented in scipy
-            rot_matrix = self._rotation_matrix_from_vectors(vec_norm,reference_vector)
+            rot_matrix = self._rotation_matrix_from_vectors(vec_norm, reference_vector)
             rotation = R.from_matrix(rot_matrix)
             rotations.append(rotation)
         
@@ -318,7 +326,8 @@ class TrajectoryGenerator:
             print(f"  ✓ Converted {len(vectors)} vectors to rotation matrices")
         
         self.rotations = rotations
-        return rotations, None
+        self.coordinates = vectors  # Store vectors as coordinates
+        return rotations, vectors
     
     def simulate_vector_on_cone(self, 
                                 S2: Optional[float] = None,
@@ -345,7 +354,7 @@ class TrajectoryGenerator:
         num_steps : int, optional
             Number of simulation steps (default: use config.num_steps)
         axis : np.ndarray, optional
-            Cone axis direction (default: [0, 0, 1])
+            Cone axis direction (default: use config.cone_axis or [0, 0, 1])
             Will be normalized automatically
         
         Returns
@@ -378,7 +387,10 @@ class TrajectoryGenerator:
         tau_c = tau_c if tau_c is not None else self.config.tau_c
         dt = dt if dt is not None else self.config.dt
         num_steps = num_steps if num_steps is not None else self.config.num_steps
-        axis = axis if axis is not None else np.array([0, 0, 1])
+        if axis is None:
+            axis = self.config.cone_axis if self.config.cone_axis is not None else np.array([0, 0, 1])
+        else:
+            axis = np.asarray(axis)
         
         if self.config.verbose:
             print(f"\n{'='*70}")

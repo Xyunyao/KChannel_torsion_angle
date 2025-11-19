@@ -73,6 +73,8 @@ class NMRConfig:
         Time step in seconds
     num_steps : int
         Number of simulation steps
+    cone_axis : Optional[np.ndarray]
+        Cone axis direction for vector_on_cone trajectory (default: [0, 0, 1])
     
     # Euler angle conversion (Module 2)
     local_axis_definition : str
@@ -141,6 +143,7 @@ class NMRConfig:
     tau_c: float = 2e-9  # 2 ns
     dt: float = 2e-12  # 2 ps
     num_steps: int = 20000
+    cone_axis: Optional[np.ndarray] = None  # Cone axis for vector_on_cone (default: [0, 0, 1])
     
     # Euler angle conversion
     local_axis_definition: str = 'CO_CA'

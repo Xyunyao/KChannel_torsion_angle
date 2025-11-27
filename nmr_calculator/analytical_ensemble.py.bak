@@ -1,0 +1,440 @@
+"""
+Module: Analytical Ensemble Average (OPTIMIZED)
+
+Optimized calculation of ensemble average using pre-computed weight coefficients.
+
+Key optimization: Separate time-independent (Wigner D) from time-dependent (C matrix):
+
+C_rot(m,m,t) = Σ_{j,n} D_{mj}(Ω) · C_{jn}(t) · D*_{mn}(Ω)
+             = Σ_{j,n} [D_{mj}(Ω) · D*_{mn}(Ω)] · C_{jn}(t)
+             = Σ_{j,n} W_{jn}(Ω) · C_{jn}(t)
+
+After ensemble averaging:
+<C_rot(m,m,t)> = Σ_{j,n} K_{jn} · C_{jn}(t)
+
+where K_{jn} = ∫ W_{jn}(Ω) dΩ is computed ONCE and stored!
+
+This reduces evaluation from O(N_time × N_orientations) to O(N_time × 25) [25 = 5×5 matrix elements]
+"""
+
+import numpy as np
+import sympy as sp
+from sympy import symbols, cos, sin, exp, I, conjugate, simplify, integrate, pi, sqrt
+from typing import Dict, Tuple, Optional
+import pickle
+from pathlib import Path
+from .config import NMRConfig
+
+
+class AnalyticalEnsembleCalculator:
+    """
+    Calculate analytical ensemble average using pre-computed weight coefficients.
+    
+    Attributes
+    ----------
+    config : NMRConfig
+        Configuration object
+    alpha, beta, gamma : sympy.Symbol
+        Euler angle symbols
+    D_symbolic : sympy.Matrix
+        Symbolic Wigner D^(2) matrix (5×5)
+    K_matrix : Dict[Tuple[int,int], float]
+        Pre-computed weight coefficients K_jn for target m
+    K_matrix_symbolic : Dict[Tuple[int,int], sp.Expr]
+        Symbolic expressions for K_jn
+    """
+    
+    def __init__(self, config: NMRConfig):
+        """
+        Initialize analytical ensemble calculator.
+        
+        Parameters
+        ----------
+        config : NMRConfig
+            Configuration object
+        """
+        self.config = config
+        
+        # Define symbolic Euler angles
+        self.alpha = symbols('alpha', real=True, positive=True)
+        self.beta = symbols('beta', real=True, positive=True)
+        self.gamma = symbols('gamma', real=True, positive=True)
+        
+        # Initialize symbolic matrices
+        self.D_symbolic = None
+        self.D_conj_symbolic = None
+        
+        # Weight matrices
+        self.K_matrix = {}  # Numerical values
+        self.K_matrix_symbolic = {}  # Symbolic expressions
+        self.current_target_m = None
+        
+        if self.config.verbose:
+            print(f"\n{'='*70}")
+            print("Analytical Ensemble Average Calculator (OPTIMIZED)")
+            print(f"{'='*70}")
+            print(f"  Strategy: Pre-compute K_jn coefficients ONCE")
+            print(f"  Then: <C_rot(m,m,t)> = Σ_jn K_jn · C_jn(t)")
+    
+    def build_wigner_d_symbolic(self) -> sp.Matrix:
+        """
+        Construct symbolic Wigner D^(2) matrix.
+        
+        Returns
+        -------
+        D : sympy.Matrix
+            Symbolic 5×5 Wigner D^(2) matrix
+        """
+        if self.config.verbose:
+            print(f"\n  Building symbolic Wigner D^(2) matrix...")
+        
+        # Helper functions
+        c = cos(self.beta / 2)
+        s = sin(self.beta / 2)
+        cb = cos(self.beta)
+        
+        # Create 5×5 small-d matrix for ℓ=2
+        d_small = sp.Matrix([
+            # Row 0: m = -2
+            [
+                c**4,
+                2 * c**3 * s,
+                sqrt(6) * c**2 * s**2,
+                2 * c * s**3,
+                s**4
+            ],
+            # Row 1: m = -1
+            [
+                -2 * c**3 * s,
+                c**4 - 3*c**2*s**2,
+                sqrt(6) * c * s * (2*c**2 - 1),
+                s**4 - 3*c**2*s**2,
+                2 * c * s**3
+            ],
+            # Row 2: m = 0
+            [
+                sqrt(6) * c**2 * s**2,
+                -sqrt(6) * c * s * (2*c**2 - 1),
+                (3*cb**2 - 1) / 2,
+                sqrt(6) * c * s * (2*c**2 - 1),
+                sqrt(6) * c**2 * s**2
+            ],
+            # Row 3: m = 1
+            [
+                2 * c * s**3,
+                s**4 - 3*c**2*s**2,
+                -sqrt(6) * c * s * (2*c**2 - 1),
+                c**4 - 3*c**2*s**2,
+                2 * c**3 * s
+            ],
+            # Row 4: m = 2
+            [
+                s**4,
+                -2 * c * s**3,
+                sqrt(6) * c**2 * s**2,
+                -2 * c**3 * s,
+                c**4
+            ]
+        ])
+        
+        # Add phase factors
+        D = sp.zeros(5, 5)
+        m_values = [-2, -1, 0, 1, 2]
+        
+        for i, m in enumerate(m_values):
+            for j, mp in enumerate(m_values):
+                phase_alpha = exp(-I * m * self.alpha)
+                phase_gamma = exp(-I * mp * self.gamma)
+                D[i, j] = phase_alpha * d_small[i, j] * phase_gamma
+        
+        self.D_symbolic = D
+        self.D_conj_symbolic = conjugate(D)
+        
+        if self.config.verbose:
+            print(f"    ✓ Built 5×5 Wigner D^(2) matrix")
+        
+        return D
+    
+    def compute_weight_matrix_symbolic(self, target_m: int = 1) -> Dict[Tuple[int, int], sp.Expr]:
+        """
+        Compute symbolic weight matrix W_jn(Ω) = D_mj(Ω) · D*_mn(Ω).
+        
+        This is the key optimization: separate time-independent part!
+        
+        Parameters
+        ----------
+        target_m : int
+            Target m value for diagonal element
+        
+        Returns
+        -------
+        W_matrix : Dict[Tuple[int,int], sp.Expr]
+            Weight matrix W_jn (5×5 symbolic expressions)
+        """
+        if self.D_symbolic is None:
+            self.build_wigner_d_symbolic()
+        
+        if self.config.verbose:
+            print(f"\n  Computing weight matrix W_jn for m={target_m}...")
+            print(f"    W_jn(Ω) = D_m,j(Ω) · D*_m,n(Ω)")
+        
+        # Convert m to index
+        idx_m = target_m + 2
+        
+        W_matrix = {}
+        
+        for j_idx, j in enumerate([-2, -1, 0, 1, 2]):
+            for n_idx, n in enumerate([-2, -1, 0, 1, 2]):
+                # W_jn = D_mj · D*_mn
+                D_mj = self.D_symbolic[idx_m, j_idx]
+                D_conj_mn = self.D_conj_symbolic[idx_m, n_idx]
+                
+                W_jn = D_mj * D_conj_mn
+                W_matrix[(j, n)] = W_jn
+        
+        if self.config.verbose:
+            print(f"    ✓ Computed 25 weight expressions")
+        
+        return W_matrix
+    
+    def integrate_weight_matrix(self, target_m: int = 1) -> Dict[Tuple[int, int], sp.Expr]:
+        """
+        Integrate weight matrix over SO(3) to get K_jn coefficients.
+        
+        K_jn = ∫ W_jn(Ω) · sin(β)/(8π²) dα dβ dγ
+        
+        This is computed ONCE and then K_jn are used for all time points!
+        
+        Parameters
+        ----------
+        target_m : int
+            Target m value
+        
+        Returns
+        -------
+        K_matrix : Dict[Tuple[int,int], sp.Expr]
+            Integrated weight coefficients (mostly will be 0 by orthogonality!)
+        """
+        W_matrix = self.compute_weight_matrix_symbolic(target_m)
+        
+        if self.config.verbose:
+            print(f"\n  Integrating weight matrix over SO(3)...")
+            print(f"    This computes K_jn = ∫ W_jn(Ω) dΩ for all 25 elements")
+            print(f"    Expected: Most K_jn = 0 due to orthogonality!")
+        
+        K_matrix_symbolic = {}
+        
+        for (j, n), W_jn in W_matrix.items():
+            if self.config.verbose:
+                print(f"    Integrating W_{j},{n}...", end='')
+            
+            # Integrate over SO(3): ∫∫∫ W_jn · sin(β)/(8π²) dα dβ dγ
+            integrand = W_jn * sin(self.beta) / (8 * pi**2)
+            
+            # Integrate over α [0, 2π]
+            result = integrate(integrand, (self.alpha, 0, 2*pi))
+            result = simplify(result)
+            
+            # Integrate over β [0, π]
+            result = integrate(result, (self.beta, 0, pi))
+            result = simplify(result)
+            
+            # Integrate over γ [0, 2π]
+            result = integrate(result, (self.gamma, 0, 2*pi))
+            result = simplify(result)
+            
+            K_matrix_symbolic[(j, n)] = result
+            
+            if self.config.verbose:
+                if result == 0:
+                    print(f" = 0 (orthogonal)")
+                else:
+                    print(f" = {result}")
+        
+        self.K_matrix_symbolic = K_matrix_symbolic
+        self.current_target_m = target_m
+        
+        # Count non-zero elements
+        non_zero = sum(1 for k in K_matrix_symbolic.values() if k != 0)
+        
+        if self.config.verbose:
+            print(f"\n    ✓ Integration complete!")
+            print(f"    Non-zero coefficients: {non_zero}/25")
+            print(f"    (Most are zero due to Wigner D orthogonality)")
+        
+        return K_matrix_symbolic
+    
+    def evaluate_ensemble_average(self, 
+                                  C_matrix: Dict[Tuple[int, int], np.ndarray],
+                                  target_m: int = 1) -> np.ndarray:
+        """
+        Evaluate ensemble average using pre-computed K_jn coefficients.
+        
+        <C_rot(m,m,t)> = Σ_jn K_jn · C_jn(t)
+        
+        This is FAST because K_jn are pre-computed constants!
+        
+        Parameters
+        ----------
+        C_matrix : Dict[Tuple[int,int], np.ndarray]
+            Correlation matrix C(j,n,t) from simulation
+        target_m : int
+            Target m value
+        
+        Returns
+        -------
+        ensemble_avg : np.ndarray
+            Ensemble-averaged correlation function
+        """
+        # Compute K_matrix if not already done
+        if target_m != self.current_target_m or not self.K_matrix_symbolic:
+            self.integrate_weight_matrix(target_m)
+        
+        if self.config.verbose:
+            print(f"\n  Evaluating <C_rot({target_m},{target_m},t)> using K_jn coefficients...")
+        
+        # Get time array length
+        n_time = len(C_matrix[(0, 0)])
+        result = np.zeros(n_time, dtype=complex)
+        
+        # For each time point: <C_rot(m,m,t)> = Σ_jn K_jn · C_jn(t)
+        for (j, n), K_jn in self.K_matrix_symbolic.items():
+            if K_jn == 0:
+                continue  # Skip zero coefficients
+            
+            # Convert symbolic K_jn to numerical value
+            K_jn_val = complex(K_jn)
+            
+            # Add contribution: K_jn · C_jn(t) for all time points
+            C_jn_t = C_matrix[(j, n)]
+            result += K_jn_val * C_jn_t
+        
+        if self.config.verbose:
+            print(f"    ✓ Evaluated for {n_time} time points using weighted sum")
+            print(f"    Initial value: {result[0]:.6f}")
+            print(f"    Final value: {result[-1]:.6f}")
+        
+        return result.real
+    
+    def save_K_matrix(self, filepath: str):
+        """
+        Save pre-computed K_jn coefficients for reuse.
+        
+        Parameters
+        ----------
+        filepath : str
+            Output file path (.pkl or .npz)
+        """
+        if not self.K_matrix_symbolic:
+            raise ValueError("K matrix not computed yet! Call integrate_weight_matrix() first.")
+        
+        filepath = str(filepath)
+        
+        if filepath.endswith('.pkl'):
+            with open(filepath, 'wb') as f:
+                pickle.dump({
+                    'target_m': self.current_target_m,
+                    'K_matrix_symbolic': self.K_matrix_symbolic,
+                    'D_symbolic': self.D_symbolic
+                }, f)
+        
+        elif filepath.endswith('.npz'):
+            # Convert to numerical values
+            K_array = np.zeros((5, 5), dtype=complex)
+            for j_idx, j in enumerate([-2, -1, 0, 1, 2]):
+                for n_idx, n in enumerate([-2, -1, 0, 1, 2]):
+                    K_jn = self.K_matrix_symbolic[(j, n)]
+                    K_array[j_idx, n_idx] = complex(K_jn)
+            
+            np.savez(filepath, 
+                    K_matrix=K_array,
+                    target_m=self.current_target_m)
+        
+        elif filepath.endswith('.txt'):
+            with open(filepath, 'w') as f:
+                f.write(f"Weight Coefficients K_jn for m={self.current_target_m}\n")
+                f.write("="*70 + "\n\n")
+                for (j, n), K_jn in self.K_matrix_symbolic.items():
+                    if K_jn != 0:
+                        f.write(f"K_({j:+d},{n:+d}) = {K_jn}\n")
+                        f.write(f"          = {complex(K_jn):.10f}\n\n")
+        
+        if self.config.verbose:
+            print(f"\n  ✓ Saved K_jn coefficients to: {filepath}")
+    
+    def load_K_matrix(self, filepath: str, target_m: int):
+        """
+        Load pre-computed K_jn coefficients.
+        
+        Parameters
+        ----------
+        filepath : str
+            Input file path
+        target_m : int
+            Target m value
+        """
+        filepath = str(filepath)
+        
+        if filepath.endswith('.npz'):
+            data = np.load(filepath)
+            K_array = data['K_matrix']
+            loaded_m = int(data['target_m'])
+            
+            if loaded_m != target_m:
+                raise ValueError(f"Loaded K matrix is for m={loaded_m}, but requested m={target_m}")
+            
+            # Convert array to dictionary
+            self.K_matrix_symbolic = {}
+            for j_idx, j in enumerate([-2, -1, 0, 1, 2]):
+                for n_idx, n in enumerate([-2, -1, 0, 1, 2]):
+                    self.K_matrix_symbolic[(j, n)] = K_array[j_idx, n_idx]
+            
+            self.current_target_m = target_m
+            
+        elif filepath.endswith('.pkl'):
+            with open(filepath, 'rb') as f:
+                data = pickle.load(f)
+                if data['target_m'] != target_m:
+                    raise ValueError(f"Loaded K matrix is for m={data['target_m']}, but requested m={target_m}")
+                self.K_matrix_symbolic = data['K_matrix_symbolic']
+                self.current_target_m = target_m
+        
+        if self.config.verbose:
+            non_zero = sum(1 for k in self.K_matrix_symbolic.values() if k != 0)
+            print(f"  ✓ Loaded K_jn coefficients from: {filepath}")
+            print(f"    Target m: {target_m}")
+            print(f"    Non-zero coefficients: {non_zero}/25")
+
+
+# Test the optimized implementation
+if __name__ == '__main__':
+    from .config import NMRConfig
+    
+    print("="*70)
+    print("Testing Optimized Analytical Ensemble Calculator")
+    print("="*70)
+    
+    config = NMRConfig(verbose=True)
+    calc = AnalyticalEnsembleCalculator(config)
+    
+    # Step 1: Compute and integrate weight matrix (do this ONCE!)
+    print("\n" + "="*70)
+    print("STEP 1: Computing K_jn coefficients (DO ONCE)")
+    print("="*70)
+    
+    import time
+    t_start = time.time()
+    K_matrix = calc.integrate_weight_matrix(target_m=1)
+    t_integrate = time.time() - t_start
+    
+    print(f"\nTime to compute K_jn: {t_integrate:.2f} s ({t_integrate/60:.1f} min)")
+    
+    # Save for reuse
+    calc.save_K_matrix('/tmp/K_matrix_m1.txt')
+    calc.save_K_matrix('/tmp/K_matrix_m1.npz')
+    calc.save_K_matrix('/tmp/K_matrix_m1.pkl')
+    
+    print("\n" + "="*70)
+    print("✓ K_jn coefficients computed and saved!")
+    print("  Now you can use these for ANY trajectory without re-integrating!")
+    print("="*70)

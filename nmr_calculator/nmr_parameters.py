@@ -4,13 +4,31 @@ Module 7: NMR Relaxation Parameters
 Calculate T1 and T2 relaxation times from spectral density.
 
 For CSA relaxation:
-R1 = (1/T1) = (2/15) × (γB₀Δσ)² × [J(ωN) + 3J(ωN) + 6J(2ωN)]
+R1 = (1/T1) = (2/15) × (γB₀Δσ)² × [J(ω0)](1+η²/3)
 
-For dipolar relaxation (e.g., 15N-1H):
-R1 = (1/T1) = (d²/4) × [J(ωH-ωN) + 3J(ωN) + 6J(ωH+ωN)]
-where d = (μ₀/4π) × (γHγNℏ/r³NH)
+R2 = (1/T2) = (1/30) × (γB₀Δσ)² × [4J(0) + 3J(ω0)](1+η²/3)
 
-T2 calculations include additional J(0) terms.
+Here J(w) is scalar, independent of m.
+
+
+Numerical:
+
+R1 = (1/T1) =  (γB₀)² × [J(ω0)], here J(w) is calculated from correlation functions, and contains CSA information.
+
+R2 = (1/T2) =  (γB₀)² × [4J(0) + 3J(ω0)]/2, here J(w) is calculated from correlation functions, and contains CSA information.
+
+
+For dipolar relaxation (15N-1H):
+Lipari-Szabo:
+R1 = (d²/4) × [J(ωH-ωN) + 3J(ωN) + 6J(ωH+ωN)]
+R2 = (d²/8) × [4J(0) + J(ωH-ωN) + 3J(ωN) + 6J(ωH) + 6J(ωH+ωN)]
+
+where d = (μ₀/4π) × (γH γN ℏ) / r³NH
+
+Numeric (Redfield):
+[Placeholder - to be implemented]
+
+Note: All frequencies ω are in rad/s throughout this module.
 """
 
 import numpy as np
@@ -21,6 +39,10 @@ from .config import NMRConfig, GAMMA
 class NMRParametersCalculator:
     """
     Calculate NMR relaxation parameters (T1, T2, NOE, etc.).
+    
+    Supports two calculation methods:
+    1. Lipari-Szabo (LS): Analytical formulas
+    2. Numeric: Universal formulas from Redfield theory
     
     Attributes
     ----------
@@ -36,6 +58,10 @@ class NMRParametersCalculator:
         CSA contribution to R1
     R1_dipolar : float
         Dipolar contribution to R1
+    R2_csa : float
+        CSA contribution to R2
+    R2_dipolar : float
+        Dipolar contribution to R2
     """
     
     def __init__(self, config: NMRConfig):
@@ -59,7 +85,8 @@ class NMRParametersCalculator:
     def calculate(self, 
                  spectral_density: np.ndarray,
                  frequencies: np.ndarray,
-                 frequency_markers: Optional[Dict] = None) -> Tuple[float, Optional[float]]:
+                 frequency_markers: Optional[Dict] = None,
+                 method: str = 'numeric') -> Tuple[float, Optional[float]]:
         """
         Calculate T1 and T2 from spectral density.
         
@@ -68,9 +95,11 @@ class NMRParametersCalculator:
         spectral_density : np.ndarray
             Spectral density J(ω) (n_freq,)
         frequencies : np.ndarray
-            Angular frequencies (rad/s) (n_freq,)
+            Angular frequencies in rad/s (n_freq,)
         frequency_markers : Dict, optional
             Pre-calculated J(ω) at specific frequencies
+        method : str, default='numeric'
+            Calculation method: 'LS' (Lipari-Szabo) or 'numeric' (universal)
         
         Returns
         -------
@@ -87,6 +116,7 @@ class NMRParametersCalculator:
             print(f"  Nucleus: {self.config.nucleus}")
             print(f"  B₀: {self.config.B0} T")
             print(f"  Interaction type: {self.config.interaction_type}")
+            print(f"  Calculation method: {method}")
         
         # Get spectral density at required frequencies
         J_values = self._get_J_at_frequencies(spectral_density, frequencies, frequency_markers)
@@ -94,11 +124,15 @@ class NMRParametersCalculator:
         # Calculate T1
         if self.config.calculate_T1:
             if self.config.interaction_type == 'CSA':
-                # Use universal formula that works for any η
-                # This expects correlation function in ppm² units
-                T1 = self._calculate_T1_CSA_universal(J_values)
+                if method.upper() == 'LS':
+                    T1 = self._calculate_T1_CSA_LS(J_values)
+                else:
+                    T1 = self._calculate_T1_CSA_numeric(J_values)
             elif self.config.interaction_type == 'dipolar':
-                T1 = self._calculate_T1_dipolar(J_values)
+                if method.upper() == 'LS':
+                    T1 = self._calculate_T1_dipolar_LS(J_values)
+                else:
+                    T1 = self._calculate_T1_dipolar_numeric(J_values)
             else:
                 raise ValueError(f"Unknown interaction type: {self.config.interaction_type}")
             
@@ -111,9 +145,15 @@ class NMRParametersCalculator:
         T2 = None
         if self.config.calculate_T2:
             if self.config.interaction_type == 'CSA':
-                T2 = self._calculate_T2_CSA(J_values)
+                if method.upper() == 'LS':
+                    T2 = self._calculate_T2_CSA_LS(J_values)
+                else:
+                    T2 = self._calculate_T2_CSA_numeric(J_values)
             elif self.config.interaction_type == 'dipolar':
-                T2 = self._calculate_T2_dipolar(J_values)
+                if method.upper() == 'LS':
+                    T2 = self._calculate_T2_dipolar_LS(J_values)
+                else:
+                    T2 = self._calculate_T2_dipolar_numeric(J_values)
             
             self.T2 = T2
             
@@ -135,6 +175,8 @@ class NMRParametersCalculator:
         - J(ωH) for proton
         - J(ωH±ωN) for sum/difference frequencies
         
+        All frequencies are in rad/s.
+        
         Parameters
         ----------
         spectral_density : np.ndarray
@@ -151,9 +193,9 @@ class NMRParametersCalculator:
         """
         J_values = {}
         
-        # Get Larmor frequencies
-        omega_nucleus = self.config.get_omega0()  # Observed nucleus (e.g., 15N)
-        omega_H = 2 * np.pi * self.config.B0 * GAMMA['1H']  # Proton
+        # Get Larmor frequencies (rad/s)
+        omega_nucleus = self.config.get_omega0()  # rad/s - Observed nucleus (e.g., 15N)
+        omega_H = 2 * np.pi * self.config.B0 * GAMMA['1H']  # rad/s - Proton
         
         # J(0)
         J_values['J_0'] = spectral_density[0]
@@ -188,28 +230,128 @@ class NMRParametersCalculator:
         
         return J_values
     
-    def _calculate_T1_CSA_universal(self, J_values: Dict[str, float]) -> float:
+    # =========================================================================
+    # CSA Relaxation - Lipari-Szabo (Analytical)
+    # =========================================================================
+    
+    def _calculate_T1_CSA_LS(self, J_values: Dict[str, float]) -> float:
         """
-        Calculate T1 for CSA relaxation using universal formula.
+        Calculate T1 for CSA relaxation using Lipari-Szabo formula.
         
-        R1 = (1/T1) = f₀² × J(ω₀) × 10⁻¹²
+        Lipari-Szabo (uniaxial CSA, η=0):
+        R1 = (2/15) × (ω₀Δσ)² × J(ω₀)
         
-        where f₀ is the Larmor frequency in Hz (NOT rad/s).
+        where:
+        - ω₀ is Larmor frequency (rad/s)
+        - Δσ is CSA in ppm (dimensionless, multiply by 10⁻⁶)
+        - J(ω₀) is spectral density at Larmor frequency
+        
+        Valid only for axially symmetric CSA tensor (η = 0).
+        For normalized correlation functions (C(0)=1).
+        
+        Parameters
+        ----------
+        J_values : Dict[str, float]
+            Spectral density at required frequencies (from normalized ACF)
+        
+        Returns
+        -------
+        T1 : float
+            Longitudinal relaxation time (seconds)
+        """
+        omega_0 = self.config.get_omega0()  # rad/s
+        delta_sigma = self.config.delta_sigma if hasattr(self.config, 'delta_sigma') else 100.0  # ppm
+        
+        # Convert Δσ from ppm to absolute frequency: Δσ_rad = Δσ_ppm × 10⁻⁶ × ω₀
+        delta_sigma_rad = delta_sigma * 1e-6 * omega_0  # rad/s
+        
+        J_omega_0 = J_values['J_omega']
+        
+        # R1 = (2/15) × (ω₀Δσ)² × J(ω₀)
+        # Units: (rad/s)² × s = rad²/s = s⁻¹ ✓
+        R1_csa = (2.0/15.0) * (delta_sigma_rad)**2 * J_omega_0
+        
+        T1 = 1.0 / R1_csa
+        
+        self.R1_csa = R1_csa
+        
+        if self.config.verbose:
+            print(f"\n  CSA T1 calculation (Lipari-Szabo, η=0):")
+            print(f"    ω₀: {omega_0:.2e} rad/s ({omega_0/(2*np.pi):.2e} Hz)")
+            print(f"    Δσ: {delta_sigma} ppm = {delta_sigma_rad:.2e} rad/s")
+            print(f"    J(ω₀): {J_omega_0:.2e} s")
+            print(f"    R1_CSA: {R1_csa:.3f} s⁻¹")
+            print(f"    Note: Valid only for η=0, normalized ACF")
+        
+        return T1
+    
+    def _calculate_T2_CSA_LS(self, J_values: Dict[str, float]) -> float:
+        """
+        Calculate T2 for CSA relaxation using Lipari-Szabo formula.
+        
+        Lipari-Szabo (uniaxial CSA, η=0):
+        R2 = (1/30) × (ω₀Δσ)² × [4J(0) + 3J(ω₀)]
+        
+        where:
+        - ω₀ is Larmor frequency (rad/s)
+        - Δσ is CSA in ppm (dimensionless)
+        - J(0), J(ω₀) are spectral densities
+        
+        Valid only for axially symmetric CSA tensor (η = 0).
+        
+        Parameters
+        ----------
+        J_values : Dict[str, float]
+            Spectral density values
+        
+        Returns
+        -------
+        T2 : float
+            Transverse relaxation time (seconds)
+        """
+        omega_0 = self.config.get_omega0()  # rad/s
+        delta_sigma = self.config.delta_sigma if hasattr(self.config, 'delta_sigma') else 100.0  # ppm
+        delta_sigma_rad = delta_sigma * 1e-6 * omega_0  # rad/s
+        
+        J_0 = J_values['J_0']
+        J_omega_0 = J_values['J_omega']
+        
+        # R2 = (1/30) × (ω₀Δσ)² × [4J(0) + 3J(ω₀)]
+        R2_csa = (1.0/30.0) * (delta_sigma_rad)**2 * (4*J_0 + 3*J_omega_0)
+        
+        T2 = 1.0 / R2_csa
+        
+        self.R2_csa = R2_csa
+        
+        if self.config.verbose:
+            print(f"\n  CSA T2 calculation (Lipari-Szabo, η=0):")
+            print(f"    J(0): {J_0:.2e} s")
+            print(f"    J(ω₀): {J_omega_0:.2e} s")
+            print(f"    R2_CSA: {R2_csa:.3f} s⁻¹")
+        
+        return T2
+    
+    # =========================================================================
+    # CSA Relaxation - Numeric (Universal)
+    # =========================================================================
+    
+    def _calculate_T1_CSA_numeric(self, J_values: Dict[str, float]) -> float:
+        """
+        Calculate T1 for CSA relaxation using numeric/universal formula.
+        
+        Numeric (from Redfield theory, any η):
+        R1 = ω₀² × J(ω₀) × 10⁻¹²
+        
+        where:
+        - ω₀ is Larmor frequency (rad/s)
+        - J(ω₀) is spectral density from correlation function in ppm² units
+        - 10⁻¹² accounts for ppm² conversion
         
         This formula works for ANY CSA tensor (any η value) when the correlation 
         function is calculated from Y2m spherical harmonics with CSA in ppm.
-        The 10⁻¹² factor accounts for ppm² units in the correlation function.
-        
-        This is the approach used in t1_anisotropy_analysis.py where:
-        1. Calculate Y2m(t) with CSA tensor in ppm
-        2. Compute rotated correlation matrix C(m,m',τ)
-        3. Extract C(1,1,τ) (or other diagonal elements)
-        4. Calculate spectral density J(ω)
-        5. Use R1 = f₀² × J(ω₀) × 10⁻¹² (f₀ in Hz)
         
         IMPORTANT: This formula expects J(ω) from correlation functions that
-        ALREADY CONTAIN the CSA magnitude in ppm. Do NOT use this with normalized
-        correlation functions - use _calculate_T1_CSA_uniaxial() instead for that case.
+        ALREADY CONTAIN the CSA magnitude in ppm. Do NOT use normalized ACF.
         
         Parameters
         ----------
@@ -222,94 +364,69 @@ class NMRParametersCalculator:
             Longitudinal relaxation time (seconds)
         """
         omega_0 = self.config.get_omega0()  # rad/s
-        larmor_frequency_Hz = omega_0 / (2 * np.pi)  # Hz
         
-        # J(ω₀) - spectral density at Larmor frequency
         J_omega_0 = J_values['J_omega']
         
-        # R1 = f₀² × J(ω₀) × 10⁻¹²
-        # where f₀ is in Hz (NOT rad/s!)
-        # The 10⁻¹² comes from ppm² in the correlation function
-        # This matches the reference implementation in t1_anisotropy_analysis.py
-        R1_csa = (larmor_frequency_Hz**2) * J_omega_0 * 1e-12
+        # R1 = ω₀² × J(ω₀) × 10⁻¹²
+        # Units: (rad/s)² × s × 10⁻¹² = rad² × 10⁻¹² / s = s⁻¹ ✓
+        R1_csa = (omega_0**2) * J_omega_0 * 1e-12
         
         T1 = 1.0 / R1_csa
         
         self.R1_csa = R1_csa
         
         if self.config.verbose:
-            print(f"\n  CSA T1 calculation (universal formula, any η):")
-            print(f"    ω₀: {omega_0:.2e} rad/s ({larmor_frequency_Hz:.2e} Hz)")
+            print(f"\n  CSA T1 calculation (Numeric/Universal, any η):")
+            print(f"    ω₀: {omega_0:.2e} rad/s ({omega_0/(2*np.pi):.2e} Hz)")
             print(f"    J(ω₀): {J_omega_0:.2e} s")
             print(f"    R1_CSA: {R1_csa:.3f} s⁻¹")
             print(f"    Note: Correlation function must be in ppm² units")
         
         return T1
     
-    def _calculate_T1_CSA_uniaxial(self, J_values: Dict[str, float]) -> float:
+    def _calculate_T2_CSA_numeric(self, J_values: Dict[str, float]) -> float:
         """
-        Calculate T1 for uniaxial CSA relaxation (η = 0) using analytical formula.
+        Calculate T2 for CSA relaxation using numeric/universal formula.
         
-        R1 = (1/T1) = (1/3) × (f₀ × Δσ)² × J(ω₀)
+        Numeric (from Redfield theory, any η):
+        [PLACEHOLDER - To be implemented]
         
-        where f₀ is Larmor frequency in Hz and Δσ is in ppm (as dimensionless).
+        The formula should be derived from Redfield relaxation matrix elements
+        for arbitrary CSA tensor symmetry.
         
-        This is the analytical formula from Lipari-Szabo theory for uniaxial CSA.
-        Only valid for axially symmetric CSA tensor (η = 0).
-        
-        IMPORTANT: This formula expects J(ω) from NORMALIZED correlation functions
-        (where C(0) = 1). The CSA magnitude (Δσ) is applied separately in the formula.
-        Do NOT use this with correlation functions that already contain CSA in ppm -
-        use _calculate_T1_CSA_universal() instead for that case.
-        
-        For correlation functions from trajectory simulations with arbitrary η,
-        use _calculate_T1_CSA_universal() instead.
+        Temporarily using Lipari-Szabo formula as fallback.
         
         Parameters
         ----------
         J_values : Dict[str, float]
-            Spectral density at required frequencies (from normalized correlation)
+            Spectral density values
         
         Returns
         -------
-        T1 : float
-            Longitudinal relaxation time (seconds)
+        T2 : float
+            Transverse relaxation time (seconds)
         """
-        omega_0 = self.config.get_omega0()  # rad/s
-        larmor_freq_Hz = omega_0 / (2 * np.pi)  # Hz
-        delta_sigma = self.config.delta_sigma if hasattr(self.config, 'delta_sigma') else 100.0  # ppm
-        
-        # Δσ in ppm is dimensionless (parts per million)
-        # Convert to absolute by: Δσ_abs = Δσ_ppm × 10⁻⁶ × f₀_Hz
-        delta_sigma_abs_Hz = delta_sigma * 1e-6 * larmor_freq_Hz  # Hz
-        
-        # R1_CSA = (1/3) × (f₀ × Δσ_ppm × 10⁻⁶)² × J(ω₀)
-        # where f₀ is in Hz, Δσ_ppm is dimensionless
-        # This gives proper units: (1/3) × Hz² × 10⁻¹² × s = s⁻¹
-        J_omega_0 = J_values['J_omega']
-        
-        R1_csa = (1.0/3.0) * (delta_sigma_abs_Hz)**2 * J_omega_0
-        
-        T1 = 1.0 / R1_csa
-        
-        self.R1_csa = R1_csa
-        
         if self.config.verbose:
-            print(f"\n  CSA T1 calculation (analytical, η=0 only):")
-            print(f"    f₀: {larmor_freq_Hz:.2e} Hz (ω₀ = {omega_0:.2e} rad/s)")
-            print(f"    Δσ: {delta_sigma} ppm = {delta_sigma_abs_Hz:.2e} Hz")
-            print(f"    J(ω₀): {J_omega_0:.2e}")
-            print(f"    R1_CSA: {R1_csa:.3f} s⁻¹")
+            print(f"\n  ⚠️  CSA T2 numeric method not yet implemented")
+            print(f"    Using Lipari-Szabo formula as fallback...")
         
-        return T1
+        # Fallback to LS formula
+        return self._calculate_T2_CSA_LS(J_values)
     
-    def _calculate_T1_dipolar(self, J_values: Dict[str, float]) -> float:
+    # =========================================================================
+    # Dipolar Relaxation - Lipari-Szabo (Analytical)
+    # =========================================================================
+    
+    def _calculate_T1_dipolar_LS(self, J_values: Dict[str, float]) -> float:
         """
-        Calculate T1 for dipolar relaxation (e.g., 15N-1H).
+        Calculate T1 for dipolar relaxation using Lipari-Szabo formula.
         
+        Lipari-Szabo (heteronuclear dipolar, e.g., 15N-1H):
         R1 = (d²/4) × [J(ωH-ωN) + 3J(ωN) + 6J(ωH+ωN)]
         
-        where d = (μ₀/4π) × (γH × γN × ℏ) / r³NH
+        where d = (μ₀/4π) × (γH γN ℏ) / r³NH
+        
+        All frequencies ω are in rad/s.
         
         Parameters
         ----------
@@ -321,14 +438,16 @@ class NMRParametersCalculator:
         T1 : float
             Longitudinal relaxation time (seconds)
         """
-        # Dipolar coupling constant
+        # Dipolar coupling constant (rad/s)
         d = self._calculate_dipolar_constant()
         
-        # R1 = (d²/4) × [J(ωH-ωX) + 3J(ωX) + 6J(ωH+ωX)]
-        J_diff = J_values['J_omega_H_minus_X']
-        J_nucleus = J_values['J_omega']
-        J_sum = J_values['J_omega_H_plus_X']
+        # Extract spectral densities
+        J_diff = J_values['J_omega_H_minus_X']  # J(ωH - ωN)
+        J_nucleus = J_values['J_omega']  # J(ωN)
+        J_sum = J_values['J_omega_H_plus_X']  # J(ωH + ωN)
         
+        # R1 = (d²/4) × [J(ωH-ωN) + 3J(ωN) + 6J(ωH+ωN)]
+        # Units: (rad/s)² × s = rad²/s = s⁻¹ ✓
         R1_dipolar = (d**2 / 4.0) * (J_diff + 3*J_nucleus + 6*J_sum)
         
         T1 = 1.0 / R1_dipolar
@@ -336,57 +455,25 @@ class NMRParametersCalculator:
         self.R1_dipolar = R1_dipolar
         
         if self.config.verbose:
-            print(f"\n  Dipolar T1 calculation:")
-            print(f"    d: {d:.2e} rad/s")
-            print(f"    J(ωH-ωX): {J_diff:.2e}")
-            print(f"    J(ωX): {J_nucleus:.2e}")
-            print(f"    J(ωH+ωX): {J_sum:.2e}")
+            print(f"\n  Dipolar T1 calculation (Lipari-Szabo):")
+            print(f"    d: {d:.2e} rad/s ({d/(2*np.pi):.2e} Hz)")
+            print(f"    J(ωH-ωN): {J_diff:.2e} s")
+            print(f"    J(ωN): {J_nucleus:.2e} s")
+            print(f"    J(ωH+ωN): {J_sum:.2e} s")
             print(f"    R1_dipolar: {R1_dipolar:.3f} s⁻¹")
         
         return T1
     
-    def _calculate_T2_CSA(self, J_values: Dict[str, float]) -> float:
+    def _calculate_T2_dipolar_LS(self, J_values: Dict[str, float]) -> float:
         """
-        Calculate T2 for CSA relaxation.
+        Calculate T2 for dipolar relaxation using Lipari-Szabo formula.
         
-        R2 = (1/15) × (ωN × Δσ)² × [4J(0) + 3J(ωN) + 6J(2ωN)]
-        
-        Parameters
-        ----------
-        J_values : Dict[str, float]
-            Spectral density values
-        
-        Returns
-        -------
-        T2 : float
-            Transverse relaxation time (seconds)
-        """
-        omega_0 = self.config.get_omega0()
-        delta_sigma = self.config.delta_sigma if hasattr(self.config, 'delta_sigma') else 100.0
-        delta_sigma_rad = delta_sigma * 1e-6 * omega_0
-        
-        J_0 = J_values['J_0']
-        J_omega_0 = J_values['J_omega']
-        
-        R2_csa = (1.0/15.0) * (delta_sigma_rad)**2 * (4*J_0 + 3*J_omega_0)
-        
-        T2 = 1.0 / R2_csa
-        
-        self.R2_csa = R2_csa
-        
-        if self.config.verbose:
-            print(f"\n  CSA T2 calculation:")
-            print(f"    J(0): {J_0:.2e}")
-            print(f"    J(ω₀): {J_omega_0:.2e}")
-            print(f"    R2_CSA: {R2_csa:.3f} s⁻¹")
-        
-        return T2
-    
-    def _calculate_T2_dipolar(self, J_values: Dict[str, float]) -> float:
-        """
-        Calculate T2 for dipolar relaxation.
-        
+        Lipari-Szabo (heteronuclear dipolar, e.g., 15N-1H):
         R2 = (d²/8) × [4J(0) + J(ωH-ωN) + 3J(ωN) + 6J(ωH) + 6J(ωH+ωN)]
+        
+        where d = (μ₀/4π) × (γH γN ℏ) / r³NH
+        
+        All frequencies ω are in rad/s.
         
         Parameters
         ----------
@@ -400,12 +487,13 @@ class NMRParametersCalculator:
         """
         d = self._calculate_dipolar_constant()
         
-        J_0 = J_values['J_0']
-        J_diff = J_values['J_omega_H_minus_X']
-        J_nucleus = J_values['J_omega']
-        J_H = J_values['J_omega_H']
-        J_sum = J_values['J_omega_H_plus_X']
+        J_0 = J_values['J_0']  # J(0)
+        J_diff = J_values['J_omega_H_minus_X']  # J(ωH - ωN)
+        J_nucleus = J_values['J_omega']  # J(ωN)
+        J_H = J_values['J_omega_H']  # J(ωH)
+        J_sum = J_values['J_omega_H_plus_X']  # J(ωH + ωN)
         
+        # R2 = (d²/8) × [4J(0) + J(ωH-ωN) + 3J(ωN) + 6J(ωH) + 6J(ωH+ωN)]
         R2_dipolar = (d**2 / 8.0) * (4*J_0 + J_diff + 3*J_nucleus + 6*J_H + 6*J_sum)
         
         T2 = 1.0 / R2_dipolar
@@ -413,11 +501,81 @@ class NMRParametersCalculator:
         self.R2_dipolar = R2_dipolar
         
         if self.config.verbose:
-            print(f"\n  Dipolar T2 calculation:")
-            print(f"    J(0): {J_0:.2e}")
+            print(f"\n  Dipolar T2 calculation (Lipari-Szabo):")
+            print(f"    J(0): {J_0:.2e} s")
+            print(f"    J(ωH-ωN): {J_diff:.2e} s")
+            print(f"    J(ωN): {J_nucleus:.2e} s")
+            print(f"    J(ωH): {J_H:.2e} s")
+            print(f"    J(ωH+ωN): {J_sum:.2e} s")
             print(f"    R2_dipolar: {R2_dipolar:.3f} s⁻¹")
         
         return T2
+    
+    # =========================================================================
+    # Dipolar Relaxation - Numeric (Universal)
+    # =========================================================================
+    
+    def _calculate_T1_dipolar_numeric(self, J_values: Dict[str, float]) -> float:
+        """
+        Calculate T1 for dipolar relaxation using numeric/universal formula.
+        
+        Numeric (from Redfield theory):
+        [PLACEHOLDER - To be implemented]
+        
+        Should be derived from Redfield relaxation matrix for dipolar interaction
+        using rotated correlation matrix C(m,m',τ).
+        
+        Temporarily using Lipari-Szabo formula as fallback.
+        
+        Parameters
+        ----------
+        J_values : Dict[str, float]
+            Spectral density at required frequencies
+        
+        Returns
+        -------
+        T1 : float
+            Longitudinal relaxation time (seconds)
+        """
+        if self.config.verbose:
+            print(f"\n  ⚠️  Dipolar T1 numeric method not yet implemented")
+            print(f"    Using Lipari-Szabo formula as fallback...")
+        
+        # Fallback to LS formula
+        return self._calculate_T1_dipolar_LS(J_values)
+    
+    def _calculate_T2_dipolar_numeric(self, J_values: Dict[str, float]) -> float:
+        """
+        Calculate T2 for dipolar relaxation using numeric/universal formula.
+        
+        Numeric (from Redfield theory):
+        [PLACEHOLDER - To be implemented]
+        
+        Should be derived from Redfield relaxation matrix for dipolar interaction
+        using rotated correlation matrix C(m,m',τ).
+        
+        Temporarily using Lipari-Szabo formula as fallback.
+        
+        Parameters
+        ----------
+        J_values : Dict[str, float]
+            Spectral density values
+        
+        Returns
+        -------
+        T2 : float
+            Transverse relaxation time (seconds)
+        """
+        if self.config.verbose:
+            print(f"\n  ⚠️  Dipolar T2 numeric method not yet implemented")
+            print(f"    Using Lipari-Szabo formula as fallback...")
+        
+        # Fallback to LS formula
+        return self._calculate_T2_dipolar_LS(J_values)
+    
+    # =========================================================================
+    # Helper Methods
+    # =========================================================================
     
     def _calculate_dipolar_constant(self) -> float:
         """
@@ -425,16 +583,18 @@ class NMRParametersCalculator:
         
         d = (μ₀/4π) × (γH × γN × ℏ) / r³NH
         
+        All quantities in SI units.
+        
         Returns
         -------
         d : float
             Dipolar coupling constant (rad/s)
         """
-        # Physical constants
-        mu_0 = 4 * np.pi * 1e-7  # T²m³/J
-        hbar = 1.054571817e-34   # J·s
+        # Physical constants (SI units)
+        mu_0 = 4 * np.pi * 1e-7  # T²m³/J (permeability of free space)
+        hbar = 1.054571817e-34   # J·s (reduced Planck constant)
         
-        # Gyromagnetic ratios (rad/T/s)
+        # Gyromagnetic ratios (rad/(T·s))
         gamma_H = GAMMA['1H']
         gamma_N = GAMMA[self.config.nucleus]
         
@@ -444,6 +604,8 @@ class NMRParametersCalculator:
             r_NH = self.config.r_NH
         
         # Dipolar constant
+        # d = -(μ₀/4π) × (γH × γN × ℏ) / r³NH
+        # Units: (T²m³/J) × (rad/(T·s))² × (J·s) / m³ = rad/s ✓
         d = -(mu_0 / (4 * np.pi)) * (gamma_H * gamma_N * hbar) / (r_NH**3)
         
         if self.config.verbose:
@@ -541,7 +703,7 @@ if __name__ == '__main__':
     from .autocorrelation import AutocorrelationCalculator
     from .spectral_density import SpectralDensityCalculator
     
-    # Test CSA
+    # Test CSA with both methods
     config = NMRConfig(
         trajectory_type='diffusion_cone',
         S2=0.85,
@@ -574,11 +736,22 @@ if __name__ == '__main__':
     sd_calc = SpectralDensityCalculator(config)
     J, freq = sd_calc.calculate(acf, time_lags)
     
-    # Calculate T1 and T2
-    nmr_calc = NMRParametersCalculator(config)
-    T1, T2 = nmr_calc.calculate(J, freq)
+    # Calculate T1 and T2 using Lipari-Szabo
+    print("\n" + "="*70)
+    print("LIPARI-SZABO METHOD")
+    print("="*70)
+    nmr_calc_LS = NMRParametersCalculator(config)
+    T1_LS, T2_LS = nmr_calc_LS.calculate(J, freq, method='LS')
     
-    print(f"\n{'='*50}")
-    print(f"Results:")
-    print(f"  T1 = {T1*1000:.1f} ms")
-    print(f"  T2 = {T2*1000:.1f} ms")
+    # Calculate T1 and T2 using Numeric
+    print("\n" + "="*70)
+    print("NUMERIC/UNIVERSAL METHOD")
+    print("="*70)
+    nmr_calc_numeric = NMRParametersCalculator(config)
+    T1_numeric, T2_numeric = nmr_calc_numeric.calculate(J, freq, method='numeric')
+    
+    print(f"\n{'='*70}")
+    print(f"Comparison:")
+    print(f"  Lipari-Szabo:  T1 = {T1_LS*1000:.1f} ms, T2 = {T2_LS*1000:.1f} ms")
+    print(f"  Numeric:       T1 = {T1_numeric*1000:.1f} ms, T2 = {T2_numeric*1000:.1f} ms")
+    print(f"{'='*70}")
